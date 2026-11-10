@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0"> <!-- スマホ対応に必須 -->
     <title>呼び出し管理</title>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="/static/poll.js" defer></script>
     <style>
         /* ベーススタイル */
         body { font-family: sans-serif; background: #f0f2f5; margin: 0; padding: 20px; }
@@ -60,9 +60,7 @@
         .btn-call { background: #2196F3; } /* 青色 */
         .btn-complete { background: #4CAF50; } /* 緑色 */
 
-        /* 通信状態インジケータ */
-        .htmx-indicator { display: none; margin-left: 10px; font-size: 0.8rem; color: #666; }
-        .htmx-request .htmx-indicator { display: inline; } /* 通信中に表示 */
+        .poll-error { background: #fff3cd; color: #664d03; padding: 12px; border-radius: 8px; margin: 12px 0; }
     </style>
 </head>
 <body>
@@ -70,26 +68,16 @@
         <a href="/admin">← メニュー</a>
         <div>
             📢 呼び出し管理
-            <span class="htmx-indicator">更新中...</span>
         </div>
     </div>
 
-    <!-- 
-        HTMXコンテナ 
-        hx-get: リスト部品を取得
-        hx-trigger: 読み込み時(load)と、5秒ごと(every 5s)に実行
-        hx-swap: このdivの内側(innerHTML)を書き換える
-    -->
-    <div id="ticket-list" class="grid-container"
-         hx-get="/admin/call/list"
-         hx-trigger="load, every 5s"
-         hx-swap="innerHTML">
-        
-        <!-- 初回ロードまでのプレースホルダー -->
-        <div style="grid-column: 1 / -1; text-align: center; padding: 20px;">
-            読み込み中...
-        </div>
+    {% if conflict %}
+    <p role="alert" class="poll-error">他の端末で既に更新されています。最新の状態を表示しました</p>
+    {% endif %}
+    <p data-poll-updated-for="ticket-list" aria-live="polite">最終更新 --:--:--</p>
+    <p data-poll-error-for="ticket-list" class="poll-error" role="alert" hidden></p>
+    <div id="ticket-list" class="grid-container" data-poll-url="/admin/call/list" data-poll-interval="10">
+        {% include "call_items.html" %}
     </div>
-
 </body>
 </html>

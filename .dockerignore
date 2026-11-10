@@ -1,0 +1,13 @@
+target/
+.git/
+.env
+.env.*
+!.env.example
+.serena/
+.agents/
+.codex/
+.aws/
+**/Secrets*.toml
+*.sql.gz
+backup*.sql
+*.log

@@ -2,11 +2,15 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>整理券発券</title>
     <style>
         body { font-family: sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
         .card { border: 1px solid #ddd; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; text-align: center; }
         button { padding: 0.8rem 2rem; cursor: pointer; font-size: 1.2rem; background: #2196F3; color: white; border: none; border-radius: 4px; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+        th, td { padding: 0.5rem; border-bottom: 1px solid #ddd; }
+        button:disabled { opacity: 0.6; cursor: wait; }
         input { font-size: 1.2rem; padding: 0.5rem; width: 60px; text-align: center; }
     </style>
 </head>
@@ -18,20 +22,21 @@
     <div class="card">
         <h2>新規発券</h2>
         <!-- アクション先を変更 -->
-        <form action="/admin/front/tickets" method="post">
+        <form action="/admin/front/tickets" method="post" onsubmit="const button = this.querySelector('button'); button.disabled = true; button.textContent = '発券中…';">
+            <input type="hidden" name="request_id" value="{{ request_id }}">
             <label>
                 人数:
-                <input type="number" name="group_size" value="1" min="1" required> 名
+                <input type="number" name="group_size" value="1" min="1" max="20" required> 名
             </label>
             <br><br>
             <button type="submit">発券する</button>
         </form>
     </div>
 
-    <!-- 直近の発券結果のみ表示 -->
+    <!-- 選択した整理券のQRを再表示 -->
     {% if let Some(ticket) = last_ticket %}
     <div class="card" style="background-color: #e0f7fa;">
-        <h3>発券完了！</h3>
+        <h3>発券した整理券</h3>
         <p>整理番号: <strong style="font-size: 2rem;">{{ ticket.number }}</strong></p>
         <p>人数: {{ ticket.group_size }}名</p>
         
@@ -43,10 +48,27 @@
                     {{ qr|safe }}
                 </div>
                 <!-- 確認用リンク -->
-                <p><a href="/guest/{{ ticket.id }}" target="_blank">画面確認</a></p>
+                <p><a href="/guest/{{ ticket.id }}" target="_blank" rel="noopener">来場者画面を確認</a></p>
             </div>
         {% endif %}
     </div>
     {% endif %}
+    <div class="card" style="overflow-x: auto;">
+        <h2>直近20件の発券履歴</h2>
+        <table>
+            <thead><tr><th>番号</th><th>人数</th><th>状態</th><th>発券時刻 (JST)</th></tr></thead>
+            <tbody>
+            {% for ticket in history %}
+                <tr>
+                    <td><a href="/admin/front/tickets/{{ ticket.id }}">{{ ticket.number }}</a></td>
+                    <td>{{ ticket.group_size }}名</td>
+                    <td>{{ ticket.status_label() }}</td>
+                    <td>{{ ticket.created_jst() }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% if history.is_empty() %}<p>発券履歴はありません。</p>{% endif %}
+    </div>
 </body>
 </html>

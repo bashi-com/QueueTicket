@@ -25,6 +25,7 @@
         <div class="card-actions">
             <form action="/admin/call/update" method="post">
                 <input type="hidden" name="id" value="{{ ticket.id }}">
+                <input type="hidden" name="from" value="{{ ticket.status }}">
                 
                 {% if ticket.status == "waiting" %}
                     <!-- 呼び出しボタン -->

@@ -3,3 +3,4 @@
 .shuttle*
 Secrets*.toml
 main_copy.txt
+.env

@@ -1,3 +1,4 @@
+<div data-status="{{ ticket.status }}">
 <p>あなたの整理番号</p>
 <div class="number">{{ ticket.number }}</div>
 
@@ -17,10 +18,9 @@
 {% else if ticket.status == "called" %}
     <div class="status status-called">呼出中！</div>
     <p>受付までお越しください！</p>
-    <!-- 呼び出されたらバイブレーションさせる（JSが必要ですが簡易的に音や動きで表現） -->
 {% else %}
     <div class="status status-completed">案内終了</div>
 {% endif %}
 
 <p style="margin-top:20px; font-size:0.8rem;">ID: {{ ticket.id }}</p>
-<p style="font-size: 0.7rem; color: #aaa;">自動更新中...</p>
+</div>

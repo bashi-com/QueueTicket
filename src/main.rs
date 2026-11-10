@@ -1,43 +1,38 @@
+use std::{env, fmt::Write, time::Duration};
+
+use askama::Template;
 use axum::{
-    extract::{Path, State, Request},
-    http::{header::AUTHORIZATION, StatusCode, Method},  // 追加: Method
-    middleware::{self, Next}, // ミドルウェア用に追加
+    extract::{rejection::FormRejection, Path, Query, Request, State},
+    http::{
+        header::{
+            AUTHORIZATION, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, WWW_AUTHENTICATE,
+        },
+        HeaderValue, Method, StatusCode,
+    },
+    middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
     Form, Router,
 };
-use askama::Template;
 use base64::prelude::*;
+use constant_time_eq::constant_time_eq;
 use qrcodegen::{QrCode, QrCodeEcc};
+use queueticket::{
+    find_ticket, format_jst, guest_poll_interval, is_same_origin, issue_ticket, reset_tickets,
+    transition_ticket, waiting_ahead, AppError, Ticket,
+};
 use serde::Deserialize;
-use shuttle_runtime::SecretStore;
-use sqlx::{FromRow, PgPool};
+use sqlx::{postgres::PgPoolOptions, PgPool};
+use url::Url;
 use uuid::Uuid;
-use constant_time_eq::constant_time_eq;   // 追加
-use chrono::{DateTime, Utc, Local}; // 日付操作用
-use axum::http::header::CONTENT_TYPE; // CSV出力用
 
 #[derive(Clone)]
 struct AppState {
     pool: PgPool,
     base_url: String,
-    expected_auth_header: String, // 追加: 認証用の正解ヘッダー文字列
+    base: Url,
+    expected_auth_header: String,
 }
-
-#[derive(FromRow, Clone)]
-struct Ticket {
-    id: Uuid,
-    number: i32,
-    group_size: i32,
-    status: String,
-    // created_at はDB定義にはあるがStructになかったので追加（分析に必須）
-    created_at: DateTime<Utc>, 
-    // 追加: NULLの可能性があるので Option で包む
-    called_at: Option<DateTime<Utc>>, 
-    completed_at: Option<DateTime<Utc>>, 
-}
-
-// --- テンプレート定義 ---
 
 #[derive(Template)]
 #[template(path = "admin_index.html")]
@@ -48,16 +43,19 @@ struct AdminIndexTemplate;
 struct FrontTemplate {
     last_ticket: Option<Ticket>,
     qr_code: Option<String>,
+    request_id: Uuid,
+    history: Vec<Ticket>,
 }
 
 #[derive(Template)]
 #[template(path = "call.html")]
 struct CallTemplate {
     tickets: Vec<Ticket>,
+    conflict: bool,
 }
 
 #[derive(Template)]
-#[template(path = "call_items.html")] // 部品用
+#[template(path = "call_items.html")]
 struct CallListTemplate {
     tickets: Vec<Ticket>,
 }
@@ -67,6 +65,7 @@ struct CallListTemplate {
 struct GuestTemplate {
     ticket: Ticket,
     waiting_count: i64,
+    interval: u32,
 }
 
 #[derive(Template)]
@@ -76,35 +75,23 @@ struct GuestContentTemplate {
     waiting_count: i64,
 }
 
-// --- ヘルパー ---
-struct HtmlTemplate<T>(T);
-impl<T: Template> IntoResponse for HtmlTemplate<T> {
-    fn into_response(self) -> Response {
-        match self.0.render() {
-            Ok(html) => Html(html).into_response(),
-            Err(err) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to render template: {}", err),
-            )
-                .into_response(),
-        }
-    }
+fn render(template: impl Template) -> Result<Html<String>, AppError> {
+    template
+        .render()
+        .map(Html)
+        .map_err(|error| AppError::Internal(error.to_string()))
 }
 
-// QRコードSVG変換関数
 fn to_svg_string(qr: &QrCode, border: i32) -> String {
     let mut res = String::new();
     let dim = qr.size();
-    let brd = border;
-    let width = dim + brd * 2;
-    use std::fmt::Write;
-    let _ = write!(res, "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" viewBox=\"0 0 {0} {0}\" stroke=\"none\">", width);
-    res.push_str("<rect width=\"100%\" height=\"100%\" fill=\"#FFFFFF\"/>");
-    res.push_str("<path d=\"");
+    let width = dim + border * 2;
+    let _ = write!(res, "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {width} {width}\" stroke=\"none\">");
+    res.push_str("<rect width=\"100%\" height=\"100%\" fill=\"#FFFFFF\"/><path d=\"");
     for y in 0..dim {
         for x in 0..dim {
             if qr.get_module(x, y) {
-                let _ = write!(res, "M{},{}h1v1h-1z ", x + brd, y + brd);
+                let _ = write!(res, "M{},{}h1v1h-1z ", x + border, y + border);
             }
         }
     }
@@ -112,315 +99,484 @@ fn to_svg_string(qr: &QrCode, border: i32) -> String {
     res
 }
 
-// --- Main ---
-#[shuttle_runtime::main]
-async fn main(
-    #[shuttle_shared_db::Postgres] pool: PgPool,
-    #[shuttle_runtime::Secrets] secret_store: SecretStore
-) -> shuttle_axum::ShuttleAxum {
-    sqlx::migrate!().run(&pool).await.expect("Migrations failed");
-
-    // 設定取得
-    let base_url = secret_store
-        .get("BASE_URL")
-        .unwrap_or_else(|| "http://localhost:8000".to_string());
-
-    let admin_password = secret_store
-        .get("ADMIN_PASSWORD")
-        .expect("ADMIN_PASSWORD must be set in Secrets.toml");
-
-    // Basic認証のヘッダー値を作成 ("Basic " + Base64("admin:password"))
-    let credentials = format!("admin:{}", admin_password);
-    let encoded_credentials = BASE64_STANDARD.encode(credentials);
-    let expected_auth_header = format!("Basic {}", encoded_credentials);
-
-    // Stateの初期化
-    let state = AppState { 
-        pool, 
-        base_url, 
-        expected_auth_header // Stateに保存しておく
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if let Err(error) = dotenvy::dotenv() {
+        if !error.not_found() {
+            return Err(error.into());
+        }
+    }
+    let database_url = env::var("DATABASE_URL")?;
+    let admin_password = env::var("ADMIN_PASSWORD")?;
+    if admin_password.is_empty() {
+        return Err("ADMIN_PASSWORD must not be empty".into());
+    }
+    let base_url = env::var("BASE_URL")?.trim_end_matches('/').to_owned();
+    let base = Url::parse(&base_url)?;
+    if !matches!(base.scheme(), "http" | "https")
+        || base.host_str().is_none()
+        || base.query().is_some()
+        || base.fragment().is_some()
+        || !base.username().is_empty()
+        || base.password().is_some()
+    {
+        return Err(
+            "BASE_URL must be an HTTP(S) URL without credentials, query, or fragment".into(),
+        );
+    }
+    let port: u16 = env::var("PORT")
+        .unwrap_or_else(|_| "8000".to_owned())
+        .parse()?;
+    let bind_addr = env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".to_owned());
+    let pool = PgPoolOptions::new()
+        .max_connections(10)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(&database_url)
+        .await?;
+    sqlx::migrate!().run(&pool).await?;
+    let state = AppState {
+        pool: pool.clone(),
+        base_url,
+        base,
+        expected_auth_header: format!(
+            "Basic {}",
+            BASE64_STANDARD.encode(format!("admin:{admin_password}"))
+        ),
     };
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind((bind_addr.as_str(), port)).await?;
+    eprintln!("Listening on {}", listener.local_addr()?);
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    pool.close().await;
+    Ok(())
+}
 
-    // --- ルーティングの構築 ---
-    
-    // 1. 公開エリア (ゲスト画面用) + ルートリダイレクト
-    let public_routes = Router::new()
-        .route("/", get(root_redirect))
-        .route("/guest/{id}", get(guest_page))
-        .route("/guest/{id}/content", get(guest_content));
-
-    // 2. 管理者エリア (認証が必要)
+fn router(state: AppState) -> Router {
     let admin_routes = Router::new()
         .route("/admin", get(admin_index))
         .route("/admin/reset", post(reset_db))
-        .route("/admin/download_csv", get(download_csv)) // 追加: トラフィックダウンロード用
+        .route("/admin/download_csv", get(download_csv))
         .route("/admin/front", get(front_page))
         .route("/admin/front/tickets", post(create_ticket))
+        .route("/admin/front/tickets/{id}", get(front_ticket))
         .route("/admin/call", get(call_page))
-        .route("/admin/call/list", get(call_list)) // 追加: 自動更新用エンドポイント
+        .route("/admin/call/list", get(call_list))
         .route("/admin/call/update", post(update_status))
-        // ここで認証ミドルウェアを適用
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
-
-    // 3. 全体をマージ
-    let app = Router::new()
-        .merge(public_routes)
+    Router::new()
         .merge(admin_routes)
-        .with_state(state);
-
-    Ok(app.into())
+        .route("/", get(|| async { Redirect::to("/admin") }))
+        .route("/guest/{id}", get(guest_page))
+        .route("/guest/{id}/content", get(guest_content))
+        .layer(middleware::from_fn(no_store))
+        .route("/static/poll.js", get(poll_script))
+        .with_state(state)
 }
 
-// --- 認証ミドルウェア (セキュリティ強化版) ---
-async fn auth(
-    State(state): State<AppState>,
-    req: Request,
-    next: Next,
-) -> impl IntoResponse {
-    // 1. Basic認証チェック (タイミング攻撃対策済み)
-    let auth_header = req.headers()
-        .get(AUTHORIZATION)
-        .and_then(|value| value.as_bytes().into()); // バイト列として取得
-
-    let is_authorized = match auth_header {
-        Some(auth) => constant_time_eq(auth, state.expected_auth_header.as_bytes()),
-        None => false,
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            eprintln!("Ctrl+C signal error: {error}");
+        }
     };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                eprintln!("SIGTERM signal error: {error}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! { () = ctrl_c => {}, () = terminate => {} }
+}
 
-    if !is_authorized {
+async fn no_store(req: Request, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+async fn poll_script() -> impl IntoResponse {
+    (
+        [
+            (CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        include_str!("../static/poll.js"),
+    )
+}
+
+async fn auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let authorized = req.headers().get(AUTHORIZATION).is_some_and(|value| {
+        constant_time_eq(value.as_bytes(), state.expected_auth_header.as_bytes())
+    });
+    if !authorized {
         return (
             StatusCode::UNAUTHORIZED,
-            [(axum::http::header::WWW_AUTHENTICATE, "Basic realm=\"Admin Area\"")],
-            "Unauthorized: Access Denied",
-        ).into_response();
+            [(WWW_AUTHENTICATE, "Basic realm=\"Admin Area\"")],
+            "認証が必要です",
+        )
+            .into_response();
     }
-
-    // 2. CSRF対策 (簡易版: Origin/Refererチェック)
-    // データを書き換えるメソッド(POST, DELETE等)の場合、リクエスト元を確認する
-    if req.method() == Method::POST || req.method() == Method::PUT || req.method() == Method::DELETE {
-        let headers = req.headers();
-        
-        // OriginまたはRefererヘッダーを取得
-        let origin = headers.get("Origin")
-            .and_then(|v| v.to_str().ok())
-            .or_else(|| headers.get("Referer").and_then(|v| v.to_str().ok()));
-
-        // 環境変数の BASE_URL と前方一致するか確認
-        // 例: "https://my-app.shuttle.rs" からのリクエストか？
-        let is_valid_origin = match origin {
-            Some(o) => o.starts_with(&state.base_url),
-            None => false, // OriginもRefererもないPOSTリクエストは拒否
-        };
-
-        if !is_valid_origin {
+    if !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+        // An invalid/present Origin must not fall back to a valid Referer.
+        let source = req
+            .headers()
+            .get("origin")
+            .or_else(|| req.headers().get("referer"));
+        let valid = source
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| is_same_origin(value, &state.base));
+        if !valid {
             return (
                 StatusCode::FORBIDDEN,
-                "Forbidden: CSRF Check Failed (Invalid Origin)",
-            ).into_response();
+                Html("送信元を確認できません。管理画面から操作してください"),
+            )
+                .into_response();
         }
     }
-
-    // すべてのチェックを通過
     next.run(req).await
 }
 
-// --- ハンドラ ---
-async fn root_redirect() -> impl IntoResponse {
-    Redirect::to("/admin")
+async fn reset_db(State(state): State<AppState>) -> Result<Redirect, AppError> {
+    reset_tickets(&state.pool).await?;
+    Ok(Redirect::to("/admin"))
 }
 
-async fn reset_db(State(state): State<AppState>) -> impl IntoResponse {
-    sqlx::query("TRUNCATE TABLE tickets")
-        .execute(&state.pool)
-        .await
-        .expect("Failed to reset table");
-    Redirect::to("/admin")
+async fn admin_index() -> Result<Html<String>, AppError> {
+    render(AdminIndexTemplate)
 }
 
-async fn admin_index() -> impl IntoResponse {
-    HtmlTemplate(AdminIndexTemplate)
-}
-
-async fn front_page() -> impl IntoResponse {
-    HtmlTemplate(FrontTemplate {
-        last_ticket: None,
-        qr_code: None,
+async fn front_template(
+    state: &AppState,
+    last_ticket: Option<Ticket>,
+) -> Result<Html<String>, AppError> {
+    let qr_code = match &last_ticket {
+        Some(ticket) => {
+            let url = format!("{}/guest/{}", state.base_url, ticket.id);
+            let qr = QrCode::encode_text(&url, QrCodeEcc::Medium)
+                .map_err(|error| AppError::Internal(format!("QR error: {error:?}")))?;
+            Some(to_svg_string(&qr, 4))
+        }
+        None => None,
+    };
+    let history = sqlx::query_as("SELECT * FROM tickets ORDER BY seq DESC LIMIT 20")
+        .fetch_all(&state.pool)
+        .await?;
+    render(FrontTemplate {
+        last_ticket,
+        qr_code,
+        request_id: Uuid::new_v4(),
+        history,
     })
+}
+
+async fn front_page(State(state): State<AppState>) -> Result<Html<String>, AppError> {
+    front_template(&state, None).await
+}
+
+async fn front_ticket(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+) -> Result<Html<String>, AppError> {
+    let ticket = find_ticket(&state.pool, id).await?;
+    front_template(&state, Some(ticket)).await
 }
 
 #[derive(Deserialize)]
 struct CreateTicketForm {
     group_size: i32,
+    request_id: Uuid,
 }
 
 async fn create_ticket(
     State(state): State<AppState>,
-    Form(form): Form<CreateTicketForm>,
-) -> impl IntoResponse {
-    let next_number: i32 = sqlx::query_scalar("SELECT COALESCE(MAX(number), 0) + 1 FROM tickets")
-        .fetch_one(&state.pool)
-        .await
-        .unwrap_or(1);
-    let number = if next_number > 999 { 1 } else { next_number };
+    form: Result<Form<CreateTicketForm>, FormRejection>,
+) -> Result<Redirect, AppError> {
+    let Form(form) = form.map_err(|_| {
+        AppError::Validation("人数は1〜20名で入力してください。発券画面から送信し直してください")
+    })?;
+    let ticket = issue_ticket(&state.pool, form.group_size, form.request_id).await?;
+    Ok(Redirect::to(&format!("/admin/front/tickets/{}", ticket.id)))
+}
 
-    // 修正: RETURNING * に変更して、すべての列（日時含む）を取得する
-    let ticket = sqlx::query_as::<_, Ticket>(
-        "INSERT INTO tickets (number, group_size, status) 
-         VALUES ($1, $2, 'waiting') 
-         RETURNING *" 
+async fn active_tickets(pool: &PgPool) -> Result<Vec<Ticket>, AppError> {
+    Ok(
+        sqlx::query_as("SELECT * FROM tickets WHERE status <> 'completed' ORDER BY seq")
+            .fetch_all(pool)
+            .await?,
     )
-    .bind(number)
-    .bind(form.group_size)
-    .fetch_one(&state.pool)
-    .await
-    .expect("Failed to create ticket");
+}
 
-    let url = format!("{}/guest/{}", state.base_url, ticket.id);
-    let qr = QrCode::encode_text(&url, QrCodeEcc::Medium).unwrap();
-    let svg = to_svg_string(&qr, 4);
+#[derive(Deserialize)]
+struct CallQuery {
+    conflict: Option<String>,
+}
 
-    HtmlTemplate(FrontTemplate {
-        last_ticket: Some(ticket),
-        qr_code: Some(svg),
+async fn call_page(
+    State(state): State<AppState>,
+    Query(query): Query<CallQuery>,
+) -> Result<Html<String>, AppError> {
+    render(CallTemplate {
+        tickets: active_tickets(&state.pool).await?,
+        conflict: query.conflict.as_deref() == Some("1"),
     })
 }
 
-async fn call_page(State(state): State<AppState>) -> impl IntoResponse {
-    // 修正: SELECT * に変更
-    let tickets = sqlx::query_as::<_, Ticket>(
-        "SELECT * FROM tickets 
-         WHERE status != 'completed' 
-         ORDER BY number ASC"
+async fn call_list(State(state): State<AppState>) -> Result<Response, AppError> {
+    Ok((
+        [("X-Poll-Interval", "10")],
+        render(CallListTemplate {
+            tickets: active_tickets(&state.pool).await?,
+        })?,
     )
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or(vec![]);
-
-    HtmlTemplate(CallTemplate { tickets })
-}
-
-// 追加: リストの中身だけを返すハンドラ
-async fn call_list(State(state): State<AppState>) -> impl IntoResponse {
-    // 修正: SELECT * に変更
-    let tickets = sqlx::query_as::<_, Ticket>(
-        "SELECT * FROM tickets 
-         WHERE status != 'completed' 
-         ORDER BY number ASC"
-    )
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or(vec![]);
-
-    HtmlTemplate(CallListTemplate { tickets })
+        .into_response())
 }
 
 #[derive(Deserialize)]
 struct UpdateStatusForm {
     id: Uuid,
+    from: String,
     status: String,
 }
 
-// update_status 関数を書き換え
 async fn update_status(
     State(state): State<AppState>,
-    Form(form): Form<UpdateStatusForm>,
-) -> impl IntoResponse {
-    // ステータスに応じて、更新するカラムを変える
-    if form.status == "called" {
-        // 呼び出し: status を変えつつ、called_at に現在時刻を入れる
-        sqlx::query("UPDATE tickets SET status = 'called', called_at = NOW() WHERE id = $1")
-            .bind(form.id)
-            .execute(&state.pool)
-            .await
-            .expect("Failed to update status to called");
-    } else if form.status == "completed" {
-        // 完了: status を変えつつ、completed_at に現在時刻を入れる
-        sqlx::query("UPDATE tickets SET status = 'completed', completed_at = NOW() WHERE id = $1")
-            .bind(form.id)
-            .execute(&state.pool)
-            .await
-            .expect("Failed to update status to completed");
-    }
-
-    Redirect::to("/admin/call")
+    form: Result<Form<UpdateStatusForm>, FormRejection>,
+) -> Result<Redirect, AppError> {
+    let Form(form) = form.map_err(|_| AppError::Validation("状態変更の入力が不正です"))?;
+    let affected = transition_ticket(&state.pool, form.id, &form.from, &form.status).await?;
+    Ok(Redirect::to(if affected == 0 {
+        "/admin/call?conflict=1"
+    } else {
+        "/admin/call"
+    }))
 }
 
-async fn guest_page(Path(id): Path<Uuid>, State(state): State<AppState>) -> impl IntoResponse {
-    // 修正: SELECT * に変更
-    let ticket = sqlx::query_as::<_, Ticket>("SELECT * FROM tickets WHERE id = $1")
-        .bind(id)
-        .fetch_one(&state.pool)
-        .await
-        .expect("Ticket not found");
-
-    // COUNT(*) は構造体にマッピングしないので、そのままでOK
-    let waiting_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tickets WHERE status = 'waiting' AND number < $1")
-        .bind(ticket.number)
-        .fetch_one(&state.pool)
-        .await
-        .unwrap_or(0);
-
-    HtmlTemplate(GuestTemplate { ticket, waiting_count })
+async fn guest_page(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+) -> Result<Html<String>, AppError> {
+    let ticket = find_ticket(&state.pool, id).await?;
+    let waiting_count = waiting_ahead(&state.pool, ticket.seq).await?;
+    let interval = guest_poll_interval(&ticket.status, waiting_count);
+    render(GuestTemplate {
+        ticket,
+        waiting_count,
+        interval,
+    })
 }
 
-async fn guest_content(Path(id): Path<Uuid>, State(state): State<AppState>) -> impl IntoResponse {
-    // 修正: SELECT * に変更
-    let ticket = sqlx::query_as::<_, Ticket>("SELECT * FROM tickets WHERE id = $1")
-        .bind(id)
-        .fetch_one(&state.pool)
-        .await
-        .expect("Ticket not found");
-
-    let waiting_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tickets WHERE status = 'waiting' AND number < $1")
-        .bind(ticket.number)
-        .fetch_one(&state.pool)
-        .await
-        .unwrap_or(0);
-
-    HtmlTemplate(GuestContentTemplate { ticket, waiting_count })
-}
-
-// CSVダウンロード用ハンドラ
-async fn download_csv(State(state): State<AppState>) -> impl IntoResponse {
-    // 全データを取得（番号順）
-    let tickets = sqlx::query_as::<_, Ticket>(
-        "SELECT * FROM tickets ORDER BY number ASC"
+async fn guest_content(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+) -> Result<Response, AppError> {
+    let ticket = find_ticket(&state.pool, id).await?;
+    let waiting_count = waiting_ahead(&state.pool, ticket.seq).await?;
+    let interval = guest_poll_interval(&ticket.status, waiting_count);
+    Ok((
+        [("X-Poll-Interval", interval.to_string())],
+        render(GuestContentTemplate {
+            ticket,
+            waiting_count,
+        })?,
     )
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or(vec![]);
+        .into_response())
+}
 
-    // CSVのヘッダー行
-    let mut csv_data = String::from("整理番号,人数,ステータス,発券時刻,呼出時刻,完了時刻\n");
-
-    // データ行の生成
-    for t in tickets {
-        // 時刻を日本時間 (Local) に変換して文字列化。データがない場合は空文字。
-        let created = t.created_at.with_timezone(&Local).format("%H:%M:%S").to_string();
-        
-        let called = t.called_at
-            .map(|d| d.with_timezone(&Local).format("%H:%M:%S").to_string())
-            .unwrap_or_default();
-            
-        let completed = t.completed_at
-            .map(|d| d.with_timezone(&Local).format("%H:%M:%S").to_string())
-            .unwrap_or_default();
-
-        // 1行追加
-        use std::fmt::Write;
+async fn download_csv(State(state): State<AppState>) -> Result<Response, AppError> {
+    let tickets: Vec<Ticket> = sqlx::query_as("SELECT * FROM tickets ORDER BY seq")
+        .fetch_all(&state.pool)
+        .await?;
+    let mut csv = String::from(
+        "内部通番seq,整理番号,人数,ステータス,発券時刻(JST),呼出時刻(JST),完了時刻(JST)\n",
+    );
+    for ticket in tickets {
+        let called = ticket.called_at.map(format_jst).unwrap_or_default();
+        let completed = ticket.completed_at.map(format_jst).unwrap_or_default();
         let _ = writeln!(
-            csv_data, 
-            "{},{},{},{},{},{}", 
-            t.number, t.group_size, t.status, created, called, completed
+            csv,
+            "{},{},{},{},{},{},{}",
+            ticket.seq,
+            ticket.number,
+            ticket.group_size,
+            ticket.status,
+            format_jst(ticket.created_at),
+            called,
+            completed
         );
     }
-
-    // レスポンス生成: ヘッダーをつけてファイルとしてダウンロードさせる
-    (
+    Ok((
         [
             (CONTENT_TYPE, "text/csv; charset=utf-8"),
-            (axum::http::header::CONTENT_DISPOSITION, "attachment; filename=\"tickets_log.csv\""),
+            (
+                CONTENT_DISPOSITION,
+                "attachment; filename=\"tickets_log.csv\"",
+            ),
         ],
-        csv_data
+        csv,
     )
+        .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        http::Request,
+    };
+    use tower::ServiceExt;
+
+    async fn test_app() -> Router {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://localhost/unused")
+            .unwrap();
+        // A closed pool produces DB errors immediately and never accesses a network.
+        pool.close().await;
+        router(AppState {
+            pool,
+            base_url: "https://example.com".to_owned(),
+            base: Url::parse("https://example.com").unwrap(),
+            expected_auth_header: "Basic test".to_owned(),
+        })
+    }
+
+    fn post_request(path: &str) -> axum::http::request::Builder {
+        Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header(AUTHORIZATION, "Basic test")
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+    }
+
+    #[tokio::test]
+    async fn form_validation_returns_japanese_bad_request_without_db() {
+        let app = test_app().await;
+        for size in ["0", "21", "abc", "9999999999999"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    post_request("/admin/front/tickets")
+                        .header("Origin", "https://example.com")
+                        .body(Body::from(format!(
+                            "group_size={size}&request_id={}",
+                            Uuid::new_v4()
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            assert!(String::from_utf8(body.to_vec())
+                .unwrap()
+                .contains("人数は1〜20名"));
+        }
+        let response = app
+            .oneshot(
+                post_request("/admin/call/update")
+                    .header("Origin", "https://example.com")
+                    .body(Body::from(format!(
+                        "id={}&from=waiting&status=completed",
+                        Uuid::new_v4()
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn csrf_rejects_invalid_origin_and_uses_referer_only_if_origin_absent() {
+        let app = test_app().await;
+        for origin in [
+            None,
+            Some("null"),
+            Some("https://example.com.evil.com"),
+            Some("http://example.com"),
+            Some("https://example.com:444"),
+        ] {
+            let mut request = post_request("/admin/reset");
+            if let Some(origin) = origin {
+                request = request
+                    .header("Origin", origin)
+                    .header("Referer", "https://example.com/admin");
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+        }
+        // Missing Origin + matching Referer passes CSRF, then reaches the closed DB.
+        let response = app
+            .oneshot(
+                post_request("/admin/reset")
+                    .header("Referer", "https://example.com/admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn cache_auth_and_error_responses() {
+        let app = test_app().await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/static/poll.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[CACHE_CONTROL], "public, max-age=3600");
+        for (path, status) in [
+            ("/admin", StatusCode::UNAUTHORIZED),
+            ("/missing", StatusCode::NOT_FOUND),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+            assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+        }
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/guest/{}", Uuid::new_v4()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8(body.to_vec())
+            .unwrap()
+            .contains("サーバーに接続できません。しばらくして再読み込みしてください"));
+    }
 }

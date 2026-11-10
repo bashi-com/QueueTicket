@@ -1,6 +1,6 @@
 [package]
 name = "queueticket"
-version = "1.3.1"
+version = "1.4.0"
 edition = "2021"
 
 [dependencies]
@@ -11,11 +11,11 @@ chrono = { version = "0.4.42", features = ["serde"] }
 constant_time_eq = "0.4.2"
 qrcodegen = "1.8.0"
 serde = { version = "1.0.228", features = ["derive"] }
-shuttle-aws-rds = { version = "0.57.0", features = ["postgres"] }
-shuttle-axum = "0.57.0"
-shuttle-runtime = "0.57.0"
-shuttle-shared-db = { version = "0.57.0", features = ["postgres", "sqlx"] }
+dotenvy = "0.15"
 sqlx = { version = "0.8.6", features = ["chrono", "macros", "postgres", "runtime-tokio-native-tls", "uuid"] }
-tokio = "1.28.2"
-tower-http = { version = "0.6.7", features = ["validate-request", "auth", "util"] }
+tokio = { version = "1.28.2", features = ["macros", "rt-multi-thread", "net", "signal"] }
+url = "2"
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
