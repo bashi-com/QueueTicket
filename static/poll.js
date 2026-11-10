@@ -10,20 +10,31 @@
 
     if (soundButton) {
         soundButton.addEventListener("click", async () => {
+            // This tap gives the page user activation, which Chrome requires for vibrate().
+            let vibrates = false;
+            if (navigator.vibrate) {
+                try { vibrates = navigator.vibrate(200); } catch (error) { vibrates = false; }
+            }
             const AudioContext = window.AudioContext || window.webkitAudioContext;
-            if (!AudioContext) {
-                soundButton.textContent = "この端末は呼出音に対応していません";
+            try {
+                if (AudioContext) {
+                    audio = audio || new AudioContext();
+                    await audio.resume();
+                    soundEnabled = true;
+                }
+            } catch (error) {
+                soundEnabled = false;
+            }
+            if (!soundEnabled && !vibrates) {
+                soundButton.textContent = "音・バイブを有効にできませんでした。もう一度お試しください";
                 return;
             }
-            try {
-                audio = audio || new AudioContext();
-                await audio.resume();
-                soundEnabled = true;
-                soundButton.textContent = "🔔 呼出音を有効にしました";
-                soundButton.disabled = true;
-            } catch (error) {
-                soundButton.textContent = "呼出音を有効にできませんでした。もう一度お試しください";
-            }
+            soundButton.textContent = soundEnabled && vibrates
+                ? "🔔 音とバイブを有効にしました"
+                : soundEnabled
+                    ? "🔔 音を有効にしました（この端末はバイブ非対応です）"
+                    : "📳 バイブを有効にしました（この端末は音に非対応です）";
+            soundButton.disabled = true;
         });
     }
 
