@@ -1,0 +1,3 @@
+ALTER TABLE tickets ADD COLUMN returned_at TIMESTAMPTZ;
+ALTER TABLE tickets ADD COLUMN first_viewed_at TIMESTAMPTZ;
+ALTER TABLE tickets ADD COLUMN call_request_id UUID UNIQUE;

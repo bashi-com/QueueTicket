@@ -12,9 +12,25 @@
         .status { font-size: 1.5rem; font-weight: bold; padding: 10px; border-radius: 8px; color: white; }
         .status-waiting { background-color: #2196F3; }
         .status-called { background-color: #FF9800; animation: flash 1s infinite; }
+        .status-absent { background-color: #FF9800; }
+        .status-returned { background-color: #4CAF50; }
         .status-completed { background-color: #9E9E9E; }
         .poll-error { background: #fff3cd; color: #664d03; padding: 12px; border-radius: 8px; }
         #enable-sound { margin: 1rem 0; padding: 12px; border: 0; border-radius: 8px; background: #e3f2fd; color: #1976d2; font-size: 1rem; cursor: pointer; }
+        .btn-return-guest {
+            width: 100%;
+            margin-top: 12px;
+            padding: 16px;
+            font-size: 1.3rem;
+            font-weight: bold;
+            background: #1976D2;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+        }
+        .btn-return-guest:disabled { opacity: 0.6; cursor: wait; }
         .info { margin-top: 20px; color: #666; }
         @keyframes flash { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
     </style>

@@ -18,12 +18,24 @@ function setup({ interval = 15, status = "waiting" } = {}) {
     let click;
     const updated = {};
     const banner = { hidden: true };
+    const returnError = { hidden: true, textContent: "" };
+    const returnButton = { disabled: false, textContent: "🙋 会場に戻りました" };
+    const returnForm = {
+        action: "/guest/123/return",
+        dataset: { returnForm: "" },
+        querySelector: (selector) => selector === "button" ? returnButton : null
+    };
+    const elementEvents = {};
     const button = { addEventListener: (_, callback) => { click = callback; } };
     const element = {
         id: "ticket",
         dataset: { pollUrl: "/content", pollInterval: String(interval) },
         innerHTML: `<div data-status="${status}">initial content</div>`,
-        querySelector() {
+        addEventListener(name, callback) {
+            elementEvents[name] = callback;
+        },
+        querySelector(selector) {
+            if (selector === "[data-return-error]") return returnError;
             const match = this.innerHTML.match(/data-status="([^"]+)"/);
             return match ? { dataset: { status: match[1] } } : null;
         }
@@ -72,9 +84,20 @@ function setup({ interval = 15, status = "waiting" } = {}) {
     });
     return {
         element, updated, banner, timers, intervals, document, requests, vibrations,
-        events, windowEvents,
+        events, windowEvents, returnError, returnButton, returnForm,
         get beeps() { return beeps; },
         click: () => click(),
+        submitReturn() {
+            let prevented = false;
+            const promise = elementEvents.submit({
+                target: returnForm,
+                preventDefault() { prevented = true; }
+            });
+            return { promise, get prevented() { return prevented; } };
+        },
+        returnStatus(status) {
+            replies.push(() => Promise.resolve({ ok: status >= 200 && status < 300, status }));
+        },
         success(status, seconds) {
             replies.push(() => Promise.resolve({
                 ok: true,
@@ -195,4 +218,33 @@ test("an initially completed ticket does not start polling", () => {
     app.windowEvents.online();
     app.events.visibilitychange();
     assert.equal(app.requests.length, 0);
+});
+
+test("return form submit sends fetch POST, refreshes on 204/409, and restores button on error", async () => {
+    const app = setup({ interval: 15, status: "called" });
+    app.returnStatus(204);
+    app.success("called", 15);
+    const submission = app.submitReturn();
+    assert.equal(submission.prevented, true);
+    assert.equal(app.returnButton.disabled, true);
+    assert.equal(app.returnButton.textContent, "送信中…");
+    await submission.promise;
+    assert.equal(app.requests.length, 2);
+    assert.equal(app.requests[0].url, "/guest/123/return");
+    assert.equal(app.requests[0].options.method, "POST");
+    assert.equal(app.requests[0].options.headers["X-Requested-With"], "fetch");
+    assert.equal(app.requests[0].options.cache, "no-store");
+    assert.equal(app.requests[1].url, "/content");
+    assert.match(app.element.innerHTML, /updated content/);
+
+    // Reset button for failure scenario
+    app.returnButton.disabled = false;
+    app.returnButton.textContent = "🙋 会場に戻りました";
+    app.failure();
+    const failed = app.submitReturn();
+    await failed.promise;
+    assert.equal(app.returnError.hidden, false);
+    assert.equal(app.returnError.textContent, "送信できませんでした。スタッフにこの画面を見せてください");
+    assert.equal(app.returnButton.disabled, false);
+    assert.equal(app.returnButton.textContent, "🙋 会場に戻りました");
 });

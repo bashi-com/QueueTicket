@@ -1,4 +1,4 @@
-<div data-status="{{ ticket.status }}">
+<div data-status="{{ ticket.status }}"{% if let Some(phase) = phase %} data-phase="{{ phase }}"{% endif %}>
 <p>あなたの整理番号</p>
 <div class="number">{{ ticket.number }}</div>
 
@@ -14,10 +14,37 @@
                 まもなく呼び出しです！準備してお待ちください。
             </p>
         {% endif %}
+
+        {% if let Some(est) = wait_estimate %}
+            <p>
+                呼び出しの目安: 約{{ est.minutes }}分後（{{ est.around_hm }}頃）<br>
+                <small>目安です。前後することがあります</small>
+            </p>
+        {% endif %}
+
+        <p style="font-size: 0.9rem;">
+            お呼び出しから10分以内に受付へお越しください。過ぎてしまった場合も、戻られたらこの画面のボタンでお知らせいただければ優先してご案内します。
+        </p>
     </div>
 {% else if ticket.status == "called" %}
-    <div class="status status-called">呼出中！</div>
-    <p>受付までお越しください！</p>
+    {% if ticket.seated_count > 0 %}
+        <div class="status status-returned">一部ご案内済み</div>
+        <p>{{ ticket.seated_count }}名をご案内しました。残り{{ ticket.remaining() }}名の方も、次に空いた席で優先してご案内しますので会場内でお待ちください。</p>
+    {% else if phase == Some("absent") %}
+        <div class="status status-absent">お呼び出し済み</div>
+        <p>お呼びしましたが、いらっしゃいませんでした。会場に戻ったら下のボタンを押してください。次に空いた席で優先してご案内します。</p>
+        <form method="post" action="/guest/{{ ticket.id }}/return" data-return-form>
+            <button type="submit" class="btn-return-guest">🙋 会場に戻りました</button>
+        </form>
+        <p data-return-error class="poll-error" role="alert" hidden></p>
+        <p class="info" style="font-size: 0.9rem;">ボタンが押せないときは、スタッフにこの画面を見せてください。</p>
+    {% else if phase == Some("returned") %}
+        <div class="status status-returned">戻り受付済み</div>
+        <p>戻りを受け付けました。次に空いた席でご案内しますので、会場内でお待ちください。</p>
+    {% else %}
+        <div class="status status-called">呼出中！</div>
+        <p>受付までお越しください！</p>
+    {% endif %}
 {% else %}
     <div class="status status-completed">案内終了</div>
 {% endif %}

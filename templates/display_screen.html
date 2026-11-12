@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>お呼び出し状況</title>
+    <script src="/static/display.js" defer></script>
+    <style>
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: sans-serif;
+            background: #0b0e14;
+            color: #ffffff;
+            user-select: none;
+        }
+        body.hide-cursor { cursor: none; }
+
+        .screen-container {
+            display: flex;
+            width: 100vw;
+            height: 100vh;
+        }
+        .video-pane {
+            width: 70%;
+            height: 100%;
+            background: #000000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .video-pane[hidden] { display: none; }
+        .video-pane video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            background: #000000;
+        }
+
+        .info-pane {
+            width: 30%;
+            height: 100%;
+            background: #121722;
+            border-left: 2px solid #263248;
+            padding: 2.5vh 2vw;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 2vh;
+        }
+        .screen-container.no-video .info-pane {
+            width: 100%;
+            border-left: none;
+            padding: 4vh 5vw;
+        }
+
+        .top-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            border-bottom: 2px solid #263248;
+            padding-bottom: 1vh;
+        }
+        .clock {
+            font-size: clamp(1.8rem, 2.8vw, 3.2rem);
+            font-weight: bold;
+            color: #90caf9;
+            font-variant-numeric: tabular-nums;
+        }
+        .waiting-badge {
+            font-size: clamp(1.5rem, 2.4vw, 2.8rem);
+            font-weight: bold;
+            color: #ffffff;
+            background: #1e293b;
+            padding: 0.2em 0.7em;
+            border-radius: 10px;
+        }
+
+        .section-calling {
+            flex: 2;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+        }
+        .section-label {
+            font-size: clamp(1.3rem, 2vw, 2.2rem);
+            font-weight: bold;
+            margin-bottom: 1vh;
+            color: #ffd54f;
+        }
+        .calling-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1vw;
+            align-items: center;
+        }
+        .calling-number {
+            background: #ff6f00;
+            color: #ffffff;
+            font-weight: 900;
+            font-size: clamp(2.8rem, 5.5vw, 6.5rem);
+            line-height: 1.1;
+            padding: 0.15em 0.4em;
+            border-radius: 14px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            font-variant-numeric: tabular-nums;
+        }
+        .calling-grid.many .calling-number {
+            font-size: clamp(2rem, 3.6vw, 4.2rem);
+        }
+        .empty-text {
+            font-size: clamp(1.4rem, 2vw, 2.2rem);
+            color: #94a3b8;
+            font-weight: bold;
+        }
+
+        .section-upcoming {
+            border-top: 2px solid #263248;
+            padding-top: 1.5vh;
+        }
+        .section-upcoming .section-label {
+            color: #81d4fa;
+            font-size: clamp(1.1rem, 1.6vw, 1.8rem);
+        }
+        .upcoming-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.8vw;
+        }
+        .upcoming-number {
+            background: #1e3a5f;
+            color: #e0f2fe;
+            font-weight: 800;
+            font-size: clamp(1.8rem, 3vw, 3.4rem);
+            padding: 0.12em 0.45em;
+            border-radius: 10px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .section-absent {
+            border-top: 2px solid #263248;
+            padding-top: 1.5vh;
+        }
+        .section-absent .section-label {
+            color: #cbd5e1;
+            font-size: clamp(1rem, 1.4vw, 1.5rem);
+        }
+        .absent-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.6vw;
+            margin-bottom: 0.8vh;
+        }
+        .absent-number {
+            background: #334155;
+            color: #f1f5f9;
+            font-weight: bold;
+            font-size: clamp(1.3rem, 2vw, 2.2rem);
+            padding: 0.1em 0.4em;
+            border-radius: 8px;
+            font-variant-numeric: tabular-nums;
+        }
+        .absent-note {
+            font-size: clamp(0.85rem, 1.1vw, 1.2rem);
+            color: #cbd5e1;
+            line-height: 1.35;
+            margin: 0;
+        }
+
+        /* Fullscreen call overlay */
+        .call-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(13, 27, 42, 0.94);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 4vh 6vw;
+            z-index: 100;
+        }
+        .call-overlay[hidden] { display: none; }
+        .overlay-numbers {
+            font-size: clamp(4.5rem, 11vw, 11rem);
+            font-weight: 900;
+            color: #ffca28;
+            line-height: 1.15;
+            margin-bottom: 3vh;
+        }
+        .overlay-message {
+            font-size: clamp(2.5rem, 5.5vw, 5.5rem);
+            font-weight: bold;
+            color: #ffffff;
+        }
+
+        /* Setup modal */
+        .setup-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.82);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 200;
+        }
+        .setup-backdrop[hidden] { display: none; }
+        .setup-panel {
+            background: #1e293b;
+            color: #ffffff;
+            padding: 2rem 2.5rem;
+            border-radius: 16px;
+            max-width: 520px;
+            width: 90%;
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+        }
+        .setup-panel h2 {
+            margin-top: 0;
+            font-size: 1.6rem;
+        }
+        .setup-field {
+            margin: 1.2rem 0;
+            font-size: 1.1rem;
+        }
+        .setup-field input[type="file"] {
+            display: block;
+            margin-top: 0.5rem;
+            color: #e2e8f0;
+            font-size: 1rem;
+        }
+        .setup-actions {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1.5rem;
+            flex-wrap: wrap;
+        }
+        .btn-setup {
+            flex: 1;
+            padding: 0.9rem 1.2rem;
+            font-size: 1.1rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            color: #ffffff;
+            background: #2563eb;
+        }
+        .btn-setup.secondary {
+            background: #475569;
+        }
+
+        /* Gear button & connection status */
+        .gear-btn {
+            position: fixed;
+            bottom: 12px;
+            right: 14px;
+            background: rgba(30, 41, 59, 0.7);
+            color: #cbd5e1;
+            border: 1px solid #475569;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 1.1rem;
+            cursor: pointer;
+            z-index: 60;
+        }
+        .conn-status {
+            position: fixed;
+            bottom: 12px;
+            left: 16px;
+            background: #fff3cd;
+            color: #664d03;
+            border: 1px solid #ffecb5;
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            font-weight: bold;
+            z-index: 60;
+        }
+        .conn-status[hidden] { display: none; }
+    </style>
+</head>
+<body data-display="screen">
+    <div id="screen-container" class="screen-container no-video">
+        <div id="video-pane" class="video-pane" hidden>
+            <video id="pv-video" loop playsinline></video>
+        </div>
+        <div class="info-pane">
+            <div class="top-bar">
+                <div id="screen-clock" class="clock">--:--</div>
+                <div id="screen-waiting" class="waiting-badge">待ち 0組</div>
+            </div>
+
+            <div class="section-calling">
+                <div class="section-label">📢 お呼び出し中</div>
+                <div id="screen-calling" class="calling-grid">
+                    <span class="empty-text">現在お呼び出しはありません</span>
+                </div>
+            </div>
+
+            <div class="section-upcoming">
+                <div class="section-label">⏳ 次にお呼びする番号</div>
+                <div id="screen-upcoming" class="upcoming-list">
+                    <span class="empty-text">なし</span>
+                </div>
+            </div>
+
+            <div class="section-absent">
+                <div class="section-label">⏰ お呼びした番号（未着）</div>
+                <div id="screen-absent" class="absent-list">
+                    <span class="empty-text">なし</span>
+                </div>
+                <p class="absent-note">戻られた方はスマートフォンの『会場に戻りました』ボタンかスタッフへ</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="call-overlay" class="call-overlay" hidden>
+        <div id="overlay-numbers" class="overlay-numbers"></div>
+        <div class="overlay-message">受付へお越しください</div>
+    </div>
+
+    <div id="setup-modal" class="setup-backdrop">
+        <div class="setup-panel">
+            <h2>プロジェクター表示の設定</h2>
+            <div class="setup-field">
+                <label for="pv-file">PV動画を選ぶ</label>
+                <input id="pv-file" type="file" accept="video/*">
+            </div>
+            <div class="setup-field">
+                <label>
+                    <input id="pv-sound" type="checkbox" checked>
+                    PVの音を出す
+                </label>
+            </div>
+            <div class="setup-actions">
+                <button id="start-with-video" type="button" class="btn-setup">開始</button>
+                <button id="start-no-video" type="button" class="btn-setup secondary">動画なしで開始</button>
+            </div>
+        </div>
+    </div>
+
+    <button id="open-setup" type="button" class="gear-btn" title="設定">⚙</button>
+    <div id="display-conn-status" class="conn-status" role="status" hidden>⚠ 接続中…</div>
+</body>
+</html>

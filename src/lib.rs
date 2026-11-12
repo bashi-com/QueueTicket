@@ -4,12 +4,16 @@ use axum::{
     http::StatusCode,
     response::{Html, IntoResponse, Response},
 };
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, FixedOffset, TimeDelta, Utc};
 use sqlx::{FromRow, PgPool};
 use url::Url;
 use uuid::Uuid;
 
 pub const MAX_GROUP_SIZE: i32 = 20;
+pub const ABSENT_AFTER_MINUTES: i64 = 10;
+pub const WAIT_ESTIMATE_WINDOW_MINUTES: i64 = 30;
+pub const FRONT_SHOWING_SECONDS: i64 = 300;
+pub const FRONT_VIEWED_SECONDS: i64 = 8;
 
 #[derive(Debug)]
 pub enum AppError {
@@ -67,6 +71,75 @@ pub struct Ticket {
     pub called_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
     pub idempotency_key: Option<Uuid>,
+    pub returned_at: Option<DateTime<Utc>>,
+    pub first_viewed_at: Option<DateTime<Utc>>,
+    pub call_request_id: Option<Uuid>,
+    pub seated_count: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallPhase {
+    Calling,
+    Absent,
+    Returned,
+}
+
+impl CallPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Calling => "calling",
+            Self::Absent => "absent",
+            Self::Returned => "returned",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrontPhase {
+    Showing,
+    Viewed,
+}
+
+impl FrontPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Showing => "showing",
+            Self::Viewed => "viewed",
+        }
+    }
+}
+
+pub fn front_phase(
+    shown_at: DateTime<Utc>,
+    first_viewed_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> Option<FrontPhase> {
+    if now.signed_duration_since(shown_at) > TimeDelta::seconds(FRONT_SHOWING_SECONDS) {
+        return None;
+    }
+    if let Some(viewed_at) = first_viewed_at {
+        if viewed_at >= shown_at {
+            if now.signed_duration_since(viewed_at) > TimeDelta::seconds(FRONT_VIEWED_SECONDS) {
+                return None;
+            }
+            return Some(FrontPhase::Viewed);
+        }
+    }
+    Some(FrontPhase::Showing)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnOutcome {
+    Returned,
+    AlreadyReturned,
+    NotEligible,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeatOutcome {
+    Partial { remaining: i32 },
+    Completed,
+    Conflict,
 }
 
 impl Ticket {
@@ -81,6 +154,28 @@ impl Ticket {
             _ => "不明",
         }
     }
+    pub fn remaining(&self) -> i32 {
+        self.group_size - self.seated_count
+    }
+}
+
+pub fn call_phase(ticket: &Ticket, now: DateTime<Utc>) -> Option<CallPhase> {
+    if ticket.status != "called" {
+        return None;
+    }
+    if ticket.returned_at.is_some() || ticket.seated_count > 0 {
+        return Some(CallPhase::Returned);
+    }
+    if let Some(called_at) = ticket.called_at {
+        if now.signed_duration_since(called_at) >= TimeDelta::minutes(ABSENT_AFTER_MINUTES) {
+            return Some(CallPhase::Absent);
+        }
+    }
+    Some(CallPhase::Calling)
+}
+
+pub fn minutes_since(t: DateTime<Utc>, now: DateTime<Utc>) -> i64 {
+    now.signed_duration_since(t).num_minutes().max(0)
 }
 
 pub fn format_jst(date: DateTime<Utc>) -> String {
@@ -92,6 +187,23 @@ pub fn format_jst(date: DateTime<Utc>) -> String {
             .to_string(),
         None => unreachable!("UTC+9 is a valid offset"),
     }
+}
+
+pub fn format_jst_hm(date: DateTime<Utc>) -> String {
+    match FixedOffset::east_opt(9 * 3600) {
+        Some(offset) => date.with_timezone(&offset).format("%H:%M").to_string(),
+        None => unreachable!("UTC+9 is a valid offset"),
+    }
+}
+
+pub fn estimate_wait_minutes(ahead: i64, recent_calls: i64, window_minutes: i64) -> Option<i64> {
+    if recent_calls < 3 || window_minutes <= 0 {
+        return None;
+    }
+    let groups = ahead.max(0) + 1;
+    let raw_minutes = (groups * window_minutes + recent_calls - 1) / recent_calls;
+    let rounded = ((raw_minutes + 4) / 5) * 5;
+    Some(rounded.max(5))
 }
 
 pub fn next_display_number(last: i32, active: &HashSet<i32>) -> Option<i32> {
@@ -187,7 +299,7 @@ pub async fn transition_ticket(
             "UPDATE tickets SET status=$2, called_at=NOW() WHERE id=$1 AND status=$3"
         }
         ("called", "completed") => {
-            "UPDATE tickets SET status=$2, completed_at=NOW() WHERE id=$1 AND status=$3"
+            "UPDATE tickets SET status=$2, completed_at=NOW(), seated_count=group_size WHERE id=$1 AND status=$3"
         }
         _ => return Err(AppError::Validation("不正な状態変更です")),
     };
@@ -198,6 +310,43 @@ pub async fn transition_ticket(
         .execute(pool)
         .await?
         .rows_affected())
+}
+
+pub async fn seat_partial(
+    pool: &PgPool,
+    id: Uuid,
+    seat: i32,
+    expected_seated: i32,
+) -> Result<SeatOutcome, AppError> {
+    if seat < 1 {
+        return Err(AppError::Validation("案内人数が不正です"));
+    }
+    let updated = sqlx::query_as::<_, Ticket>(
+        "UPDATE tickets \
+         SET seated_count = seated_count + $2, \
+             status = CASE WHEN seated_count + $2 = group_size THEN 'completed' ELSE status END, \
+             completed_at = CASE WHEN seated_count + $2 = group_size THEN NOW() ELSE completed_at END \
+         WHERE id = $1 \
+           AND status = 'called' \
+           AND seated_count = $3 \
+           AND seated_count + $2 <= group_size \
+         RETURNING *",
+    )
+    .bind(id)
+    .bind(seat)
+    .bind(expected_seated)
+    .fetch_optional(pool)
+    .await?;
+    if let Some(ticket) = updated {
+        if ticket.status == "completed" {
+            return Ok(SeatOutcome::Completed);
+        }
+        return Ok(SeatOutcome::Partial {
+            remaining: ticket.remaining(),
+        });
+    }
+    find_ticket(pool, id).await?;
+    Ok(SeatOutcome::Conflict)
 }
 
 pub async fn reset_tickets(pool: &PgPool) -> Result<(), AppError> {
@@ -232,9 +381,229 @@ pub async fn waiting_ahead(pool: &PgPool, seq: i64) -> Result<i64, AppError> {
     )
 }
 
+pub async fn mark_returned(
+    pool: &PgPool,
+    id: Uuid,
+    now: DateTime<Utc>,
+    require_absent: bool,
+) -> Result<ReturnOutcome, AppError> {
+    let cutoff = now - TimeDelta::minutes(ABSENT_AFTER_MINUTES);
+    let affected = sqlx::query(
+        "UPDATE tickets SET returned_at=$2 \
+         WHERE id=$1 AND status='called' AND returned_at IS NULL \
+         AND (NOT $3 OR called_at <= $4)",
+    )
+    .bind(id)
+    .bind(now)
+    .bind(require_absent)
+    .bind(cutoff)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if affected > 0 {
+        return Ok(ReturnOutcome::Returned);
+    }
+    let ticket = find_ticket(pool, id).await?;
+    if ticket.status == "called" && ticket.returned_at.is_some() {
+        Ok(ReturnOutcome::AlreadyReturned)
+    } else {
+        Ok(ReturnOutcome::NotEligible)
+    }
+}
+
+pub async fn call_next(pool: &PgPool, request_id: Uuid) -> Result<Option<Ticket>, AppError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT last_number FROM ticket_counter WHERE id=1 FOR UPDATE")
+        .fetch_one(&mut *tx)
+        .await?;
+    if let Some(ticket) =
+        sqlx::query_as::<_, Ticket>("SELECT * FROM tickets WHERE call_request_id=$1")
+            .bind(request_id)
+            .fetch_optional(&mut *tx)
+            .await?
+    {
+        tx.commit().await?;
+        return Ok(Some(ticket));
+    }
+    for _ in 0..5 {
+        let Some(id) = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM tickets WHERE status='waiting' ORDER BY seq LIMIT 1 FOR UPDATE SKIP LOCKED",
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        if let Some(ticket) = sqlx::query_as::<_, Ticket>(
+            "UPDATE tickets SET status='called', called_at=NOW(), call_request_id=$2 \
+             WHERE id=$1 AND status='waiting' RETURNING *",
+        )
+        .bind(id)
+        .bind(request_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            tx.commit().await?;
+            return Ok(Some(ticket));
+        }
+    }
+    tx.commit().await?;
+    Ok(None)
+}
+
+pub async fn mark_first_viewed(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
+    sqlx::query("UPDATE tickets SET first_viewed_at=NOW() WHERE id=$1 AND first_viewed_at IS NULL")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn recent_call_count(pool: &PgPool, window_minutes: i64) -> Result<i64, AppError> {
+    Ok(sqlx::query_scalar(
+        "SELECT COUNT(*) FROM tickets WHERE called_at >= NOW() - ($1::float8 * INTERVAL '1 minute')",
+    )
+    .bind(window_minutes)
+    .fetch_one(pool)
+    .await?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_ticket(
+        status: &str,
+        called_at: Option<DateTime<Utc>>,
+        returned_at: Option<DateTime<Utc>>,
+    ) -> Ticket {
+        Ticket {
+            id: Uuid::new_v4(),
+            seq: 1,
+            number: 1,
+            group_size: 4,
+            status: status.to_owned(),
+            created_at: Utc::now(),
+            called_at,
+            completed_at: None,
+            idempotency_key: None,
+            returned_at,
+            first_viewed_at: None,
+            call_request_id: None,
+            seated_count: 0,
+        }
+    }
+
+    #[test]
+    fn call_phase_boundaries() {
+        let now = DateTime::parse_from_rfc3339("2026-11-12T03:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let waiting = sample_ticket("waiting", None, None);
+        assert_eq!(call_phase(&waiting, now), None);
+        assert_eq!(waiting.remaining(), 4);
+
+        let completed = sample_ticket("completed", Some(now - TimeDelta::minutes(20)), None);
+        assert_eq!(call_phase(&completed, now), None);
+
+        let called_9m59s = sample_ticket("called", Some(now - TimeDelta::seconds(599)), None);
+        assert_eq!(call_phase(&called_9m59s, now), Some(CallPhase::Calling));
+
+        let called_10m = sample_ticket("called", Some(now - TimeDelta::seconds(600)), None);
+        assert_eq!(call_phase(&called_10m, now), Some(CallPhase::Absent));
+
+        let returned = sample_ticket(
+            "called",
+            Some(now - TimeDelta::minutes(15)),
+            Some(now - TimeDelta::minutes(1)),
+        );
+        assert_eq!(call_phase(&returned, now), Some(CallPhase::Returned));
+
+        let mut partial_11m = sample_ticket("called", Some(now - TimeDelta::minutes(11)), None);
+        partial_11m.seated_count = 2;
+        assert_eq!(partial_11m.remaining(), 2);
+        assert_eq!(call_phase(&partial_11m, now), Some(CallPhase::Returned));
+
+        let no_called_at = sample_ticket("called", None, None);
+        assert_eq!(call_phase(&no_called_at, now), Some(CallPhase::Calling));
+
+        assert_eq!(minutes_since(now - TimeDelta::seconds(599), now), 9);
+        assert_eq!(minutes_since(now - TimeDelta::seconds(600), now), 10);
+        assert_eq!(minutes_since(now + TimeDelta::seconds(120), now), 0);
+        assert_eq!(format_jst_hm(now), "12:00");
+    }
+
+    #[test]
+    fn front_phase_boundaries() {
+        let shown_at = DateTime::parse_from_rfc3339("2026-11-12T03:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            front_phase(shown_at, None, shown_at + TimeDelta::seconds(299)),
+            Some(FrontPhase::Showing)
+        );
+        assert_eq!(
+            front_phase(shown_at, None, shown_at + TimeDelta::seconds(300)),
+            Some(FrontPhase::Showing)
+        );
+        assert_eq!(
+            front_phase(shown_at, None, shown_at + TimeDelta::seconds(301)),
+            None
+        );
+
+        let viewed_after = shown_at + TimeDelta::seconds(10);
+        assert_eq!(
+            front_phase(
+                shown_at,
+                Some(viewed_after),
+                viewed_after + TimeDelta::seconds(7)
+            ),
+            Some(FrontPhase::Viewed)
+        );
+        assert_eq!(
+            front_phase(
+                shown_at,
+                Some(viewed_after),
+                viewed_after + TimeDelta::seconds(8)
+            ),
+            Some(FrontPhase::Viewed)
+        );
+        assert_eq!(
+            front_phase(
+                shown_at,
+                Some(viewed_after),
+                viewed_after + TimeDelta::seconds(9)
+            ),
+            None
+        );
+
+        let viewed_before = shown_at - TimeDelta::seconds(5);
+        assert_eq!(
+            front_phase(
+                shown_at,
+                Some(viewed_before),
+                shown_at + TimeDelta::seconds(20)
+            ),
+            Some(FrontPhase::Showing)
+        );
+        assert_eq!(
+            front_phase(
+                shown_at,
+                Some(viewed_before),
+                shown_at + TimeDelta::seconds(301)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn wait_estimate_examples() {
+        assert_eq!(estimate_wait_minutes(0, 6, 30), Some(5));
+        assert_eq!(estimate_wait_minutes(4, 6, 30), Some(25));
+        assert_eq!(estimate_wait_minutes(1, 7, 30), Some(10));
+        assert_eq!(estimate_wait_minutes(0, 2, 30), None);
+    }
 
     #[test]
     fn display_numbers() {

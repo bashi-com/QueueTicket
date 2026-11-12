@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>整理券ご案内</title>
+    <script src="/static/display.js" defer></script>
+    <style>
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: sans-serif;
+            background: #ffffff;
+            color: #111111;
+            user-select: none;
+        }
+        .view {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 3vh 4vw;
+        }
+        .view[hidden] { display: none; }
+
+        /* Showing / Viewed view */
+        .ticket-layout {
+            display: flex;
+            align-items: center;
+            justify-content: space-around;
+            width: 100%;
+            height: 100%;
+            gap: 4vw;
+        }
+        .ticket-info {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            flex: 1;
+        }
+        .ticket-label {
+            font-size: clamp(2rem, 4vw, 3.5rem);
+            font-weight: bold;
+            color: #444;
+        }
+        .ticket-number {
+            font-size: clamp(6rem, 18vw, 15rem);
+            font-weight: 900;
+            line-height: 1.05;
+            color: #0d47a1;
+            margin: 1vh 0;
+        }
+        .ticket-group {
+            font-size: clamp(2rem, 4.5vw, 4rem);
+            font-weight: bold;
+            color: #222;
+            background: #e3f2fd;
+            padding: 0.3em 0.8em;
+            border-radius: 16px;
+        }
+        .ticket-qr-pane {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+        .qr-frame {
+            width: min(65vh, 45vw);
+            height: min(65vh, 45vw);
+            padding: 2vh;
+            background: #ffffff;
+            border: 4px solid #e0e0e0;
+            border-radius: 20px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .qr-frame svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        .qr-instruction {
+            margin-top: 2vh;
+            font-size: clamp(1.3rem, 2.5vw, 2.2rem);
+            font-weight: bold;
+            color: #1565c0;
+            text-align: center;
+        }
+        .viewed-badge {
+            position: fixed;
+            inset: 0;
+            background: rgba(255, 255, 255, 0.92);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: clamp(3.5rem, 8vw, 7rem);
+            font-weight: 900;
+            color: #2e7d32;
+            z-index: 20;
+        }
+        .viewed-badge[hidden] { display: none; }
+
+        /* Idle view */
+        .idle-layout {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            gap: 3vh;
+            width: 100%;
+        }
+        .idle-headline {
+            font-size: clamp(2.4rem, 5vw, 4.5rem);
+            font-weight: 900;
+            color: #0d47a1;
+            margin: 0;
+        }
+        .idle-waiting {
+            font-size: clamp(2.2rem, 4.5vw, 4rem);
+            font-weight: bold;
+            background: #f5f5f5;
+            padding: 0.4em 1.2em;
+            border-radius: 16px;
+            margin: 0;
+        }
+        .idle-calling {
+            font-size: clamp(2rem, 4vw, 3.5rem);
+            font-weight: bold;
+            color: #e65100;
+            margin: 0;
+        }
+        .idle-absent {
+            font-size: clamp(1.1rem, 2vw, 1.7rem);
+            color: #555;
+            background: #fff8e1;
+            padding: 0.6em 1.2em;
+            border-radius: 12px;
+            margin: 0;
+        }
+        .idle-absent[hidden] { display: none; }
+
+        /* Connection indicator */
+        .conn-status {
+            position: fixed;
+            bottom: 12px;
+            right: 16px;
+            background: #fff3cd;
+            color: #664d03;
+            border: 1px solid #ffecb5;
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            font-weight: bold;
+            z-index: 50;
+        }
+        .conn-status[hidden] { display: none; }
+    </style>
+</head>
+<body data-display="front">
+    <div id="front-ticket-view" class="view" hidden>
+        <div class="ticket-layout">
+            <div class="ticket-info">
+                <div class="ticket-label">整理番号</div>
+                <div id="front-number" class="ticket-number">--</div>
+                <div id="front-group" class="ticket-group">--名様</div>
+            </div>
+            <div class="ticket-qr-pane">
+                <div id="front-qr" class="qr-frame"></div>
+                <div class="qr-instruction">スマートフォンのカメラで読み取ってください</div>
+            </div>
+        </div>
+        <div id="front-viewed" class="viewed-badge" hidden>✓ 読み取りました</div>
+    </div>
+
+    <div id="front-idle-view" class="view">
+        <div class="idle-layout">
+            <p class="idle-headline">整理券はこちらで発行しています</p>
+            <p id="front-waiting" class="idle-waiting">現在の待ち 0組</p>
+            <p id="front-calling" class="idle-calling">お呼び出し中: なし</p>
+            <p id="front-absent" class="idle-absent" hidden></p>
+        </div>
+    </div>
+
+    <div id="display-conn-status" class="conn-status" role="status" hidden>⚠ 接続中…</div>
+</body>
+</html>

@@ -151,6 +151,53 @@
             }
         });
         window.addEventListener("online", resume);
+        if (element.addEventListener) {
+            element.addEventListener("submit", async (event) => {
+                const target = event.target;
+                const form = target?.closest
+                    ? target.closest("form[data-return-form]")
+                    : target?.dataset?.returnForm !== undefined
+                        ? target
+                        : null;
+                if (!form) return;
+                event.preventDefault();
+                const submitButton = form.querySelector ? form.querySelector("button") : null;
+                const errorBox = element.querySelector("[data-return-error]");
+                const originalText = submitButton ? submitButton.textContent : "";
+                if (submitButton) {
+                    submitButton.disabled = true;
+                    submitButton.textContent = "送信中…";
+                }
+                if (errorBox) errorBox.hidden = true;
+                const returnController = new AbortController();
+                const timeout = window.setTimeout(() => returnController.abort(), 10000);
+                try {
+                    const response = await fetch(form.action, {
+                        method: "POST",
+                        headers: { "X-Requested-With": "fetch" },
+                        credentials: "same-origin",
+                        cache: "no-store",
+                        signal: returnController.signal
+                    });
+                    if (response.status === 204 || response.status === 409) {
+                        await poll();
+                        return;
+                    }
+                    throw new Error(`HTTP ${response.status}`);
+                } catch (error) {
+                    if (errorBox) {
+                        errorBox.textContent = "送信できませんでした。スタッフにこの画面を見せてください";
+                        errorBox.hidden = false;
+                    }
+                    if (submitButton) {
+                        submitButton.disabled = false;
+                        submitButton.textContent = originalText;
+                    }
+                } finally {
+                    window.clearTimeout(timeout);
+                }
+            });
+        }
         // HTML already contains the initial server-rendered result.
         schedule(Number(element.dataset.pollInterval) || 15);
     });

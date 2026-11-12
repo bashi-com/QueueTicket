@@ -1,44 +1,152 @@
-<!-- リストが空の場合 -->
-{% if tickets.is_empty() %}
-    <div style="grid-column: 1 / -1; text-align: center; padding: 3rem; color: #888;">
+{% if returned_tickets.is_empty() && calling_tickets.is_empty() && absent_tickets.is_empty() && waiting_tickets.is_empty() %}
+    <div style="text-align: center; padding: 3rem; color: #888;">
         <p>現在待機中のチケットはありません。</p>
         <p>🎉</p>
     </div>
 {% endif %}
 
-<!-- チケットカードのループ -->
-{% for ticket in tickets %}
-    <div class="ticket-card {{ ticket.status }}">
-        <div class="card-header">
-            <span class="ticket-number">No.{{ ticket.number }}</span>
-            <span class="group-size">{{ ticket.group_size }}名</span>
-        </div>
-        
-        <div class="card-status">
-            {% if ticket.status == "waiting" %}
-                待機中
+{% if !returned_tickets.is_empty() %}
+<section class="call-section">
+    <p class="priority-banner" role="alert">戻り済みの方がいます。空いた席には先にこちらをご案内ください</p>
+    <h2 class="section-title">🔙 戻り済み・残りの方（最優先でご案内） ({{ returned_tickets.len() }}件)</h2>
+    <div class="grid-container">
+        {% for item in returned_tickets %}
+        <div class="ticket-card called returned">
+            <div class="card-header">
+                <span class="ticket-number">No.{{ item.ticket.number }}</span>
+                {% if item.ticket.seated_count > 0 %}
+                <span class="group-size">残り{{ item.remaining }}名</span>
+                {% else %}
+                <span class="group-size">{{ item.ticket.group_size }}名</span>
+                {% endif %}
+            </div>
+            {% if item.ticket.seated_count > 0 %}
+            <div class="card-status">一部案内済み {{ item.ticket.seated_count }}/{{ item.ticket.group_size }}名（残り{{ item.remaining }}名）</div>
             {% else %}
-                呼出中
+            <div class="card-status">戻り {{ item.returned_hm }}</div>
             {% endif %}
-        </div>
-
-        <div class="card-actions">
-            <form action="/admin/call/update" method="post">
-                <input type="hidden" name="id" value="{{ ticket.id }}">
-                <input type="hidden" name="from" value="{{ ticket.status }}">
-                
-                {% if ticket.status == "waiting" %}
-                    <!-- 呼び出しボタン -->
-                    <button type="submit" name="status" value="called" class="btn btn-call">
-                        📢 呼び出す
-                    </button>
-                {% else if ticket.status == "called" %}
-                    <!-- 完了ボタン -->
+            <div class="card-actions">
+                <form action="/admin/call/update" method="post">
+                    <input type="hidden" name="id" value="{{ item.ticket.id }}">
+                    <input type="hidden" name="from" value="called">
                     <button type="submit" name="status" value="completed" class="btn btn-complete">
                         ✅ 完了する
                     </button>
+                </form>
+                {% if item.remaining >= 2 %}
+                <button type="button" class="btn btn-partial" data-partial-open
+                    data-id="{{ item.ticket.id }}"
+                    data-number="{{ item.ticket.number }}"
+                    data-group-size="{{ item.ticket.group_size }}"
+                    data-seated-count="{{ item.ticket.seated_count }}">
+                    👥 一部案内
+                </button>
                 {% endif %}
-            </form>
+            </div>
         </div>
+        {% endfor %}
     </div>
-{% endfor %}
+</section>
+{% endif %}
+
+{% if !calling_tickets.is_empty() %}
+<section class="call-section">
+    <h2 class="section-title">📢 呼出中 ({{ calling_tickets.len() }}件)</h2>
+    <div class="grid-container">
+        {% for item in calling_tickets %}
+        <div class="ticket-card called">
+            <div class="card-header">
+                <span class="ticket-number">No.{{ item.ticket.number }}</span>
+                <span class="group-size">{{ item.ticket.group_size }}名</span>
+            </div>
+            <div class="card-status">呼出から {{ item.elapsed_minutes }}分</div>
+            <div class="card-actions">
+                <form action="/admin/call/update" method="post">
+                    <input type="hidden" name="id" value="{{ item.ticket.id }}">
+                    <input type="hidden" name="from" value="called">
+                    <button type="submit" name="status" value="completed" class="btn btn-complete">
+                        ✅ 完了する
+                    </button>
+                </form>
+                {% if item.remaining >= 2 %}
+                <button type="button" class="btn btn-partial" data-partial-open
+                    data-id="{{ item.ticket.id }}"
+                    data-number="{{ item.ticket.number }}"
+                    data-group-size="{{ item.ticket.group_size }}"
+                    data-seated-count="{{ item.ticket.seated_count }}">
+                    👥 一部案内
+                </button>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+{% if !absent_tickets.is_empty() %}
+<section class="call-section">
+    <h2 class="section-title">⏰ 未着（呼出から10分以上） ({{ absent_tickets.len() }}件)</h2>
+    <div class="grid-container">
+        {% for item in absent_tickets %}
+        <div class="ticket-card called absent">
+            <div class="card-header">
+                <span class="ticket-number">No.{{ item.ticket.number }}</span>
+                <span class="group-size">{{ item.ticket.group_size }}名</span>
+            </div>
+            <div class="card-status">呼出から {{ item.elapsed_minutes }}分</div>
+            <div class="card-actions">
+                <form action="/admin/call/update" method="post">
+                    <input type="hidden" name="id" value="{{ item.ticket.id }}">
+                    <input type="hidden" name="from" value="called">
+                    <button type="submit" name="status" value="completed" class="btn btn-complete">
+                        ✅ 完了する
+                    </button>
+                </form>
+                {% if item.remaining >= 2 %}
+                <button type="button" class="btn btn-partial" data-partial-open
+                    data-id="{{ item.ticket.id }}"
+                    data-number="{{ item.ticket.number }}"
+                    data-group-size="{{ item.ticket.group_size }}"
+                    data-seated-count="{{ item.ticket.seated_count }}">
+                    👥 一部案内
+                </button>
+                {% endif %}
+                <form action="/admin/call/return" method="post">
+                    <input type="hidden" name="id" value="{{ item.ticket.id }}">
+                    <button type="submit" class="btn btn-return">
+                        🙋 戻り確認
+                    </button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+{% if !waiting_tickets.is_empty() %}
+<section class="call-section">
+    <h2 class="section-title">⏳ 待機中 ({{ waiting_tickets.len() }}件)</h2>
+    <div class="grid-container">
+        {% for ticket in waiting_tickets %}
+        <div class="ticket-card waiting">
+            <div class="card-header">
+                <span class="ticket-number">No.{{ ticket.number }}</span>
+                <span class="group-size">{{ ticket.group_size }}名</span>
+            </div>
+            <div class="card-status">待機中</div>
+            <div class="card-actions">
+                <form action="/admin/call/update" method="post">
+                    <input type="hidden" name="id" value="{{ ticket.id }}">
+                    <input type="hidden" name="from" value="{{ ticket.status }}">
+                    <button type="submit" name="status" value="called" class="btn btn-call">
+                        📢 呼び出す
+                    </button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
