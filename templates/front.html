@@ -37,7 +37,7 @@
     {% if let Some(ticket) = last_ticket %}
     <div class="card" style="background-color: #e0f7fa;">
         <h3>発券した整理券</h3>
-        <p style="color: #00695c; font-weight: bold;">🖥 客向け画面に表示中</p>
+        <p style="color: #00695c; font-weight: bold;">🖥 QRコード読み取り画面に表示中</p>
         <p>整理番号: <strong style="font-size: 2rem;">{{ ticket.number }}</strong></p>
         <p>人数: {{ ticket.group_size }}名</p>
         
@@ -53,7 +53,7 @@
             </div>
         {% endif %}
         <form action="/admin/display/front/clear" method="post" style="margin-top: 12px;">
-            <button type="submit" style="background: #607d8b; font-size: 1rem; padding: 0.6rem 1.2rem;">客向け表示を消す</button>
+            <button type="submit" style="background: #607d8b; font-size: 1rem; padding: 0.6rem 1.2rem;">QRコード読み取り画面の表示を消す</button>
         </form>
     </div>
     {% endif %}

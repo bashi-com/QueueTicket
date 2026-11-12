@@ -17,9 +17,9 @@
 <body>
     <h1>管理者メニュー</h1>
     <a href="/admin/front" class="menu-link">🎫 発券画面へ<br><small>（受付担当）</small></a>
+    <a href="/admin/display/front" class="menu-link">🖥 QRコード読み取り画面へ<br><small>（受付担当）</small></a>
     <a href="/admin/call" class="menu-link">📢 呼び出し管理へ<br><small>（誘導担当）</small></a>
-    <a href="/admin/display/front" class="menu-link">🖥 受付の客向け表示</a>
-    <a href="/admin/display/screen" class="menu-link">📽 プロジェクター表示</a>
+    <a href="/admin/display/screen" class="menu-link">📽 プロジェクター投影画面へ</a>
 
     <div style="margin: 2rem 0;">
         <h3>📊 データ分析</h3>
@@ -33,7 +33,7 @@
     <div class="danger-zone">
         <h3 style="color: #d32f2f;">⚠️ 管理操作</h3>
         <p>全ての整理番号データを削除し、番号を1番からリセットします。</p>
-        <form action="/admin/reset" method="post" onsubmit="return confirm('【警告】\n本当に全てのデータを削除しますか？\nこの操作は取り消せません。');">
+        <form action="/admin/reset" method="post" onsubmit="return confirm('【確認 1/2】\n全ての整理番号データを削除し、番号を1番からやり直します。\nよろしいですか？') && confirm('【最終確認 2/2】\n本当に削除しますか？この操作は取り消せません。\n（必要なら先にCSVをダウンロードしてください）');">
             <button type="submit" class="btn-danger">全データ削除（リセット）</button>
         </form>
     </div>

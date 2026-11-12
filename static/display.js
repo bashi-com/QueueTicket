@@ -104,9 +104,13 @@
             }
             if (frontCalling) {
                 const callingNums = (state.calling || []).map((item) => item.number);
-                frontCalling.textContent = callingNums.length > 0
-                    ? `お呼び出し中: ${callingNums.join(", ")}`
-                    : "お呼び出し中: なし";
+                if (callingNums.length > 0) {
+                    frontCalling.textContent = `お呼び出し中: ${callingNums.join(", ")}`;
+                    frontCalling.hidden = false;
+                } else {
+                    frontCalling.textContent = "";
+                    frontCalling.hidden = true;
+                }
             }
             if (frontAbsent) {
                 const absentNums = (state.absent || []).map((item) => item.number);
@@ -127,6 +131,9 @@
     const pvVideo = document.getElementById("pv-video");
     const screenClock = document.getElementById("screen-clock");
     const screenWaiting = document.getElementById("screen-waiting");
+    const screenCallingSection = document.getElementById("screen-calling-section");
+    const screenUpcomingSection = document.getElementById("screen-upcoming-section");
+    const screenAbsentSection = document.getElementById("screen-absent-section");
     const screenCalling = document.getElementById("screen-calling");
     const screenUpcoming = document.getElementById("screen-upcoming");
     const screenAbsent = document.getElementById("screen-absent");
@@ -279,9 +286,12 @@
         resetCursorTimer();
     }
 
-    function renderNumberBadges(container, items, badgeClass, emptyLabel, showRemaining) {
-        if (!container) return;
+    function renderNumberBadges(section, container, items, badgeClass, showRemaining) {
         const list = items || [];
+        if (section) {
+            section.hidden = list.length === 0;
+        }
+        if (!container) return;
         if (typeof container.replaceChildren === "function") {
             container.replaceChildren();
         } else {
@@ -295,14 +305,6 @@
             }
         }
         if (list.length === 0) {
-            if (typeof document.createElement === "function" && typeof container.appendChild === "function") {
-                const span = document.createElement("span");
-                span.className = "empty-text";
-                span.textContent = emptyLabel;
-                container.appendChild(span);
-            } else {
-                container.textContent = emptyLabel;
-            }
             return;
         }
         if (typeof document.createElement === "function" && typeof container.appendChild === "function") {
@@ -354,9 +356,9 @@
     function renderScreen(state) {
         if (screenClock) screenClock.textContent = state.clock || "--:--";
         if (screenWaiting) screenWaiting.textContent = `待ち ${state.waiting_count}組`;
-        renderNumberBadges(screenCalling, state.calling, "calling-number", "現在お呼び出しはありません", true);
-        renderNumberBadges(screenUpcoming, state.upcoming, "upcoming-number", "なし");
-        renderNumberBadges(screenAbsent, state.absent, "absent-number", "なし");
+        renderNumberBadges(screenCallingSection, screenCalling, state.calling, "calling-number", true);
+        renderNumberBadges(screenUpcomingSection, screenUpcoming, state.upcoming, "upcoming-number", false);
+        renderNumberBadges(screenAbsentSection, screenAbsent, state.absent, "absent-number", false);
 
         if (prevScreenState !== null) {
             const newlyCalled = detectNewCalledItems(prevScreenState, state);

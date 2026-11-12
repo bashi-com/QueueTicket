@@ -3,10 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>整理券ご案内</title>
+    <title>QRコード読み取り画面</title>
     <script src="/static/display.js" defer></script>
     <style>
         * { box-sizing: border-box; }
+        [hidden] { display: none !important; }
         html, body {
             margin: 0;
             padding: 0;
@@ -140,6 +141,7 @@
             color: #e65100;
             margin: 0;
         }
+        .idle-calling[hidden] { display: none; }
         .idle-absent {
             font-size: clamp(1.1rem, 2vw, 1.7rem);
             color: #555;
@@ -187,7 +189,7 @@
         <div class="idle-layout">
             <p class="idle-headline">整理券はこちらで発行しています</p>
             <p id="front-waiting" class="idle-waiting">現在の待ち 0組</p>
-            <p id="front-calling" class="idle-calling">お呼び出し中: なし</p>
+            <p id="front-calling" class="idle-calling" hidden></p>
             <p id="front-absent" class="idle-absent" hidden></p>
         </div>
     </div>

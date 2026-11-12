@@ -3,10 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>お呼び出し状況</title>
+    <title>プロジェクター投影画面</title>
     <script src="/static/display.js" defer></script>
     <style>
         * { box-sizing: border-box; }
+        [hidden] { display: none !important; }
         html, body {
             margin: 0;
             padding: 0;
@@ -294,25 +295,19 @@
                 <div id="screen-waiting" class="waiting-badge">待ち 0組</div>
             </div>
 
-            <div class="section-calling">
+            <div id="screen-calling-section" class="section-calling" hidden>
                 <div class="section-label">📢 お呼び出し中</div>
-                <div id="screen-calling" class="calling-grid">
-                    <span class="empty-text">現在お呼び出しはありません</span>
-                </div>
+                <div id="screen-calling" class="calling-grid"></div>
             </div>
 
-            <div class="section-upcoming">
+            <div id="screen-upcoming-section" class="section-upcoming" hidden>
                 <div class="section-label">⏳ 次にお呼びする番号</div>
-                <div id="screen-upcoming" class="upcoming-list">
-                    <span class="empty-text">なし</span>
-                </div>
+                <div id="screen-upcoming" class="upcoming-list"></div>
             </div>
 
-            <div class="section-absent">
+            <div id="screen-absent-section" class="section-absent" hidden>
                 <div class="section-label">⏰ お呼びした番号（未着）</div>
-                <div id="screen-absent" class="absent-list">
-                    <span class="empty-text">なし</span>
-                </div>
+                <div id="screen-absent" class="absent-list"></div>
                 <p class="absent-note">戻られた方はスマートフォンの『会場に戻りました』ボタンかスタッフへ</p>
             </div>
         </div>
@@ -320,12 +315,12 @@
 
     <div id="call-overlay" class="call-overlay" hidden>
         <div id="overlay-numbers" class="overlay-numbers"></div>
-        <div class="overlay-message">受付へお越しください</div>
+        <div class="overlay-message">順番になりました</div>
     </div>
 
     <div id="setup-modal" class="setup-backdrop">
         <div class="setup-panel">
-            <h2>プロジェクター表示の設定</h2>
+            <h2>プロジェクター投影画面の設定</h2>
             <div class="setup-field">
                 <label for="pv-file">PV動画を選ぶ</label>
                 <input id="pv-file" type="file" accept="video/*">

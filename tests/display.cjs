@@ -64,7 +64,7 @@ function setup(mode = "screen") {
         "front-qr": makeElement("front-qr"),
         "front-viewed": makeElement("front-viewed", { hidden: true }),
         "front-waiting": makeElement("front-waiting", { textContent: "現在の待ち 0組" }),
-        "front-calling": makeElement("front-calling", { textContent: "お呼び出し中: なし" }),
+        "front-calling": makeElement("front-calling", { hidden: true }),
         "front-absent": makeElement("front-absent", { hidden: true }),
         // screen elements
         "screen-container": makeElement("screen-container", { classes: ["no-video"] }),
@@ -72,6 +72,9 @@ function setup(mode = "screen") {
         "pv-video": makeElement("pv-video"),
         "screen-clock": makeElement("screen-clock", { textContent: "--:--" }),
         "screen-waiting": makeElement("screen-waiting", { textContent: "待ち 0組" }),
+        "screen-calling-section": makeElement("screen-calling-section", { hidden: true }),
+        "screen-upcoming-section": makeElement("screen-upcoming-section", { hidden: true }),
+        "screen-absent-section": makeElement("screen-absent-section", { hidden: true }),
         "screen-calling": makeElement("screen-calling"),
         "screen-upcoming": makeElement("screen-upcoming"),
         "screen-absent": makeElement("screen-absent"),
@@ -239,9 +242,14 @@ test("screen display: initial state does not show overlay; second state shows ov
     assert.equal(app.elements["call-overlay"].hidden, true);
     assert.equal(app.elements["screen-clock"].textContent, "14:05");
     assert.equal(app.elements["screen-waiting"].textContent, "待ち 3組");
+    assert.equal(app.elements["screen-calling-section"].hidden, false);
+    assert.equal(app.elements["screen-upcoming-section"].hidden, false);
+    assert.equal(app.elements["screen-absent-section"].hidden, false);
     assert.equal(app.elements["screen-calling"].textContent, "10");
+    assert.equal(app.elements["screen-upcoming"].textContent, "11");
+    assert.equal(app.elements["screen-absent"].textContent, "8");
 
-    // 2nd state: seq 8 returned from absent to calling (must NOT trigger overlay)
+    // 2nd state: seq 8 returned from absent to calling (must NOT trigger overlay); absent is now empty -> section hidden
     app.replyState({
         clock: "14:05",
         calling: [
@@ -256,6 +264,10 @@ test("screen display: initial state does not show overlay; second state shows ov
     await app.fire(3000);
     await flush();
     assert.equal(app.elements["call-overlay"].hidden, true);
+    assert.equal(app.elements["screen-calling-section"].hidden, false);
+    assert.equal(app.elements["screen-upcoming-section"].hidden, false);
+    assert.equal(app.elements["screen-absent-section"].hidden, true);
+    assert.equal(app.elements["screen-absent"].textContent, "");
 
     // 3rd state: seq 11 is newly called -> overlay appears with No.11
     app.replyState({
@@ -277,7 +289,7 @@ test("screen display: initial state does not show overlay; second state shows ov
     assert.equal(app.elements["pv-video"].volume, 0.2);
     assert.equal(app.chimes, 2); // 2-tone chime
 
-    // 4th state while overlay is active: seq 12 is also called -> appended and extended
+    // 4th state while overlay is active: seq 12 is also called -> appended and extended; upcoming is now empty -> section hidden
     app.replyState({
         clock: "14:06",
         calling: [
@@ -295,11 +307,29 @@ test("screen display: initial state does not show overlay; second state shows ov
     await flush();
     assert.equal(app.elements["call-overlay"].hidden, false);
     assert.equal(app.elements["overlay-numbers"].textContent, "No.11 / No.12 の方");
+    assert.equal(app.elements["screen-upcoming-section"].hidden, true);
+    assert.equal(app.elements["screen-upcoming"].textContent, "");
 
     // After 8000ms timer, overlay hides and volume is restored
     app.fire(8000);
     assert.equal(app.elements["call-overlay"].hidden, true);
     assert.equal(app.elements["pv-video"].volume, 1.0);
+
+    // 5th state: all calling/upcoming/absent are empty -> all 3 sections hidden
+    app.replyState({
+        clock: "14:07",
+        calling: [],
+        absent: [],
+        upcoming: [],
+        waiting_count: 0,
+        front: null
+    });
+    await app.fire(3000);
+    await flush();
+    assert.equal(app.elements["screen-calling-section"].hidden, true);
+    assert.equal(app.elements["screen-upcoming-section"].hidden, true);
+    assert.equal(app.elements["screen-absent-section"].hidden, true);
+    assert.equal(app.elements["screen-calling"].textContent, "");
 });
 
 test("front display and fetch failure: retains previous content and shows connecting indicator", async () => {
@@ -373,7 +403,25 @@ test("front display and fetch failure: retains previous content and shows connec
     assert.equal(app.elements["front-ticket-view"].hidden, true);
     assert.equal(app.elements["front-idle-view"].hidden, false);
     assert.equal(app.elements["front-waiting"].textContent, "現在の待ち 5組");
+    assert.equal(app.elements["front-calling"].hidden, false);
     assert.equal(app.elements["front-calling"].textContent, "お呼び出し中: 12");
     assert.equal(app.elements["front-absent"].hidden, false);
     assert.match(app.elements["front-absent"].textContent, /お呼びした番号: 9/);
+
+    // Next poll returns empty calling and absent -> both rows are hidden
+    app.replyState({
+        clock: "14:12",
+        calling: [],
+        absent: [],
+        upcoming: [],
+        waiting_count: 4,
+        front: null
+    });
+    await app.fire(2000);
+    await flush();
+    assert.equal(app.elements["front-waiting"].textContent, "現在の待ち 4組");
+    assert.equal(app.elements["front-calling"].hidden, true);
+    assert.equal(app.elements["front-calling"].textContent, "");
+    assert.equal(app.elements["front-absent"].hidden, true);
+    assert.equal(app.elements["front-absent"].textContent, "");
 });
