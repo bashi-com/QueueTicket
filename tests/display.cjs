@@ -17,6 +17,9 @@ function makeElement(id, initial = {}) {
         className: "",
         volume: 1.0,
         muted: false,
+        loop: Boolean(initial.loop),
+        src: "",
+        playCount: 0,
         checked: initial.checked !== undefined ? initial.checked : true,
         files: initial.files || [],
         children,
@@ -38,6 +41,7 @@ function makeElement(id, initial = {}) {
             listeners[name] = cb;
         },
         play() {
+            this.playCount += 1;
             return Promise.resolve();
         },
         pause() {},
@@ -51,6 +55,7 @@ function setup(mode = "screen") {
     const winEvents = {};
     const replies = [];
     const requests = [];
+    const revoked = [];
     let timerId = 0;
     let chimes = 0;
 
@@ -141,8 +146,8 @@ function setup(mode = "screen") {
         window,
         AbortController,
         URL: {
-            createObjectURL: () => "blob:test-video",
-            revokeObjectURL: () => {}
+            createObjectURL: (file) => `blob:${file && file.name ? file.name : "test-video"}`,
+            revokeObjectURL: (url) => { revoked.push(url); }
         },
         navigator: {
             wakeLock: {
@@ -162,6 +167,7 @@ function setup(mode = "screen") {
         requests,
         docEvents,
         winEvents,
+        revoked,
         get chimes() { return chimes; },
         get helpers() { return window.QueueDisplay; },
         start() {
@@ -424,4 +430,109 @@ test("front display and fetch failure: retains previous content and shows connec
     assert.equal(app.elements["front-calling"].textContent, "");
     assert.equal(app.elements["front-absent"].hidden, true);
     assert.equal(app.elements["front-absent"].textContent, "");
+});
+
+function emptyState() {
+    return {
+        clock: "14:00",
+        calling: [],
+        absent: [],
+        upcoming: [],
+        waiting_count: 0,
+        front: null
+    };
+}
+
+function startScreenApp(files) {
+    const app = setup("screen");
+    app.replyState(emptyState());
+    app.start();
+    app.elements["pv-file"].files = files;
+    app.elements["start-with-video"].listeners.click();
+    return app;
+}
+
+test("PV playlist: three files sorted by name and looped via ended", () => {
+    const app = startScreenApp([
+        { name: "10_c.mp4" },
+        { name: "2_b.mp4" },
+        { name: "1_a.mp4" }
+    ]);
+    const video = app.elements["pv-video"];
+    assert.equal(video.loop, false);
+    assert.match(video.src, /1_a/);
+
+    video.listeners.ended();
+    assert.match(video.src, /2_b/);
+    video.listeners.ended();
+    assert.match(video.src, /10_c/);
+    video.listeners.ended();
+    assert.match(video.src, /1_a/);
+});
+
+test("PV playlist: single file keeps loop=true and ignores ended", () => {
+    const app = startScreenApp([{ name: "solo.mp4" }]);
+    const video = app.elements["pv-video"];
+    assert.equal(video.loop, true);
+    assert.match(video.src, /solo/);
+    video.listeners.ended();
+    assert.match(video.src, /solo/);
+});
+
+test("PV playlist: restarting revokes previous object URLs", () => {
+    const app = startScreenApp([{ name: "1_a.mp4" }, { name: "2_b.mp4" }]);
+    assert.match(app.elements["pv-video"].src, /1_a/);
+
+    app.elements["start-with-video"].listeners.click();
+    assert.ok(app.revoked.includes("blob:1_a.mp4"));
+    assert.ok(app.revoked.includes("blob:2_b.mp4"));
+});
+
+test("PV playlist: error skips to next and stops once all videos failed consecutively", () => {
+    const app = startScreenApp([{ name: "1_a.mp4" }, { name: "2_b.mp4" }]);
+    const video = app.elements["pv-video"];
+    assert.match(video.src, /1_a/);
+
+    video.listeners.error();
+    assert.match(video.src, /2_b/);
+    video.listeners.error();
+    assert.match(video.src, /2_b/);
+    video.listeners.error();
+    assert.match(video.src, /2_b/);
+});
+
+test("PV playlist: no-video start clears playlist and ignores ended/error", () => {
+    const app = startScreenApp([{ name: "1_a.mp4" }]);
+    const video = app.elements["pv-video"];
+    const src = video.src;
+
+    app.elements["start-no-video"].listeners.click();
+    assert.ok(app.revoked.includes("blob:1_a.mp4"));
+    video.listeners.ended();
+    video.listeners.error();
+    assert.equal(video.src, src);
+});
+
+test("PV playlist: overlay volume 0.2 and mute setting survive video switch", async () => {
+    const app = startScreenApp([{ name: "1_a.mp4" }, { name: "2_b.mp4" }]);
+    const video = app.elements["pv-video"];
+    await flush();
+
+    app.replyState({
+        clock: "14:01",
+        calling: [{ seq: 99, number: 99, group_size: 1 }],
+        absent: [],
+        upcoming: [],
+        waiting_count: 1,
+        front: null
+    });
+    await app.fire(3000);
+    await flush();
+    assert.equal(app.elements["call-overlay"].hidden, false);
+    assert.equal(video.volume, 0.2);
+
+    video.listeners.ended();
+    assert.match(video.src, /2_b/);
+    assert.equal(video.volume, 0.2);
+    assert.equal(video.muted, false);
 });

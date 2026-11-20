@@ -147,7 +147,9 @@
     const openSetupBtn = document.getElementById("open-setup");
 
     let audioCtx = null;
-    let currentVideoObjectUrl = null;
+    let pvPlaylist = [];
+    let pvIndex = 0;
+    let consecutiveVideoErrors = 0;
     let prevScreenState = null;
     let activeOverlayNumbers = [];
     let overlayTimer = null;
@@ -213,28 +215,54 @@
         }
     }
 
+    function clearPlaylist() {
+        if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
+            for (const url of pvPlaylist) {
+                URL.revokeObjectURL(url);
+            }
+        }
+        pvPlaylist = [];
+        pvIndex = 0;
+        consecutiveVideoErrors = 0;
+    }
+
+    function playPlaylistVideo() {
+        if (!pvVideo || pvIndex < 0 || pvIndex >= pvPlaylist.length) return;
+        pvVideo.src = pvPlaylist[pvIndex];
+        applyVideoSoundSetting();
+        try {
+            const playPromise = pvVideo.play();
+            if (playPromise && typeof playPromise.catch === "function") {
+                playPromise.catch(() => {});
+            }
+        } catch (error) {
+            /* Ignore video play errors */
+        }
+    }
+
+    function advancePlaylist() {
+        if (pvPlaylist.length < 2) return;
+        pvIndex = (pvIndex + 1) % pvPlaylist.length;
+        playPlaylistVideo();
+    }
+
     function startScreen(withVideo) {
         ensureAudioContext();
         requestFullscreenSafe();
-        const file = pvFileInput && pvFileInput.files && pvFileInput.files[0];
-        if (withVideo && file && pvVideo && typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
-            if (currentVideoObjectUrl && typeof URL.revokeObjectURL === "function") {
-                URL.revokeObjectURL(currentVideoObjectUrl);
+        clearPlaylist();
+        const files = withVideo && pvFileInput && pvFileInput.files
+            ? Array.from(pvFileInput.files)
+            : [];
+        if (files.length > 0 && pvVideo && typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
+            files.sort((a, b) => a.name.localeCompare(b.name, "ja", { numeric: true }));
+            for (const file of files) {
+                pvPlaylist.push(URL.createObjectURL(file));
             }
-            currentVideoObjectUrl = URL.createObjectURL(file);
-            pvVideo.src = currentVideoObjectUrl;
-            applyVideoSoundSetting();
+            pvVideo.loop = pvPlaylist.length === 1;
+            playPlaylistVideo();
             if (videoPane) videoPane.hidden = false;
             if (screenContainer && screenContainer.classList) {
                 screenContainer.classList.remove("no-video");
-            }
-            try {
-                const playPromise = pvVideo.play();
-                if (playPromise && typeof playPromise.catch === "function") {
-                    playPromise.catch(() => {});
-                }
-            } catch (error) {
-                /* Ignore video play errors */
             }
         } else {
             if (pvVideo) {
@@ -255,6 +283,22 @@
         }
         if (startNoVideoBtn && startNoVideoBtn.addEventListener) {
             startNoVideoBtn.addEventListener("click", () => startScreen(false));
+        }
+        if (pvVideo && pvVideo.addEventListener) {
+            pvVideo.addEventListener("ended", () => {
+                if (pvPlaylist.length < 2) return;
+                consecutiveVideoErrors = 0;
+                advancePlaylist();
+            });
+            pvVideo.addEventListener("playing", () => {
+                consecutiveVideoErrors = 0;
+            });
+            pvVideo.addEventListener("error", () => {
+                if (pvPlaylist.length < 2) return;
+                consecutiveVideoErrors += 1;
+                if (consecutiveVideoErrors >= pvPlaylist.length) return;
+                advancePlaylist();
+            });
         }
         if (pvSoundCheckbox && pvSoundCheckbox.addEventListener) {
             pvSoundCheckbox.addEventListener("change", applyVideoSoundSetting);
