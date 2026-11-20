@@ -109,12 +109,12 @@ Windows（cmd.exe）では復元コマンドを次に置き換えます。
 docker compose exec -T db sh -c "psql -v ON_ERROR_STOP=1 -U $POSTGRES_USER -d $POSTGRES_DB" < backup.sql
 ```
 
-#### Raspberry Pi などで Render の DB を定期バックアップする
+#### Raspberry Pi などで DB（Neon 等）を定期バックアップする
 
 `scripts/backup.sh` を使うと、Render などの外部 PostgreSQL を `pg_dump` + `gzip` で定期的にダンプし、世代管理（既定で最新300件保持）できます。
 
 1. 接続先 DB サーバー以上のメジャーバージョンの PostgreSQL クライアント（`pg_dump`）をインストールします。
-2. `scripts/backup.env`（`.gitignore` 済み、`chmod 600` 推奨）を作成し、Render の External Database URL（SSL 必須のため末尾に `?sslmode=require` を付与）を設定します。
+2. `scripts/backup.env`（`.gitignore` 済み、`chmod 600` 推奨）を作成し、DB の接続URL（Neon なら接続文字列。SSL 必須のため `sslmode=require` を含める）を設定します。
 
 ```sh
 DATABASE_URL="postgres://user:pass@xxx.render.com/dbname?sslmode=require"
@@ -134,13 +134,13 @@ KEEP=300
 gunzip -c /path/to/queueticket-YYYYmmdd-HHMMSS.sql.gz | psql -v ON_ERROR_STOP=1 "$DATABASE_URL"
 ```
 
-#### Windows ノートPCで Render の DB を定期バックアップする
+#### Windows ノートPCで DB（Neon）を定期バックアップする
 
 `scripts/windows/` のスクリプトは、素の Windows 11（標準の PowerShell 5.1）でそのまま動きます。プロジェクター投影用のPCと兼用できます。
 
-1. Render のダッシュボードで DB の PostgreSQL バージョン（新規作成時の既定は 18）と External Database URL を確認します。
+1. Neon のコンソールでプロジェクトを開き、「Connect」から接続文字列（`postgresql://…neon.tech/…?sslmode=require…`）をコピーします。**Connection pooling はオフ**にし、ホスト名に `-pooler` が付かない直接接続の文字列を使います。PostgreSQL のバージョンもプロジェクトの設定で確認します。Render の Web Service に設定した `DATABASE_URL` を流用する場合は、ホスト名の `-pooler` を消してから使います（アプリ側の設定はそのままで構いません）。
 2. [PostgreSQL 公式の Windows 用バイナリ](https://www.enterprisedb.com/download-postgresql-binaries) から、DB と同じかそれより新しいバージョンの Windows x86-64 版の zip をダウンロードします。展開してできた `pgsql` フォルダを、`scripts\windows\` の中にそのまま置きます（`scripts\windows\pgsql\bin\pg_dump.exe` があればOK）。`C:\Program Files\PostgreSQL\<バージョン>\bin` にインストールしてある場合はそちらも自動で使います。
-3. `scripts\windows\start-backup.bat` をダブルクリックします。初回だけ External Database URL を貼り付けて Enter を押します（画面には表示されません。`?sslmode=require` は自動で付き、`scripts\windows\backup.env` に保存されます）。
+3. `scripts\windows\start-backup.bat` をダブルクリックします。初回だけ接続文字列を貼り付けて Enter を押します（画面には表示されません。`?sslmode=require` は自動で付き、`scripts\windows\backup.env` に保存されます）。
 4. 開いた PowerShell ウィンドウは開いたままにします。閉じるとバックアップが止まります。
 
 *   既定では5分ごとに `%USERPROFILE%\queueticket-backups\queueticket-YYYYmmdd-HHMMSS.sql.gz` を作り、最新1000件を残します。ログは同じフォルダの `backup.log` に残ります。間隔と件数は `backup.env` の `INTERVAL_MINUTES` と `KEEP` で変えられます。

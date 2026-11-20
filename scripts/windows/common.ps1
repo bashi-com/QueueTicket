@@ -168,7 +168,7 @@ function Get-ToolNotFoundMessage {
     if ($ToolName -eq 'psql') {
         return "psql.exe が見つかりません。PostgreSQL 公式 zip を展開して $folder に置くか、C:\Program Files\PostgreSQL\<バージョン>\bin にインストールするか、PSQL にフルパスを設定してください。"
     }
-    return "pg_dump.exe が見つかりません。PostgreSQL 公式 zip を展開して $folder に置くか（Render の DB 以上のバージョンが必要です）、C:\Program Files\PostgreSQL\<バージョン>\bin にインストールするか、PG_DUMP にフルパスを設定してください。"
+    return "pg_dump.exe が見つかりません。PostgreSQL 公式 zip を展開して $folder に置くか（DB 以上のバージョンが必要です）、C:\Program Files\PostgreSQL\<バージョン>\bin にインストールするか、PG_DUMP にフルパスを設定してください。"
 }
 
 function Format-BackupSize {
@@ -277,7 +277,7 @@ function Invoke-BackupOnce {
 
         if ($exitCode -ne 0) {
             if ($detail -match '(?i)version mismatch') {
-                $detail = $detail + "`r`n" + 'Render の DB より新しいバージョンの PostgreSQL を入れてください。'
+                $detail = $detail + "`r`n" + 'DB より新しいバージョンの PostgreSQL を入れてください。'
             }
             return [pscustomobject]@{
                 Success = $false

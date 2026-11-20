@@ -38,7 +38,7 @@ if ([string]::IsNullOrWhiteSpace($databaseUrl)) {
         exit 2
     }
     # -AsSecureString keeps the URL from being echoed on the projection screen.
-    $secureUrl = Read-Host 'Render の External Database URL を貼り付けてください' -AsSecureString
+    $secureUrl = Read-Host 'DB の接続URL（Neon の接続文字列）を貼り付けてください' -AsSecureString
     $urlPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureUrl)
     try {
         $databaseUrl = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($urlPointer)
