@@ -134,6 +134,23 @@ KEEP=300
 gunzip -c /path/to/queueticket-YYYYmmdd-HHMMSS.sql.gz | psql -v ON_ERROR_STOP=1 "$DATABASE_URL"
 ```
 
+#### Windows ノートPCで Render の DB を定期バックアップする
+
+`scripts/windows/` のスクリプトは、素の Windows 11（標準の PowerShell 5.1）でそのまま動きます。プロジェクター投影用のPCと兼用できます。
+
+1. Render のダッシュボードで DB の PostgreSQL バージョン（新規作成時の既定は 18）と External Database URL を確認します。
+2. [PostgreSQL 公式の Windows 用バイナリ](https://www.enterprisedb.com/download-postgresql-binaries) から、DB と同じかそれより新しいバージョンの Windows x86-64 版の zip をダウンロードします。展開してできた `pgsql` フォルダを、`scripts\windows\` の中にそのまま置きます（`scripts\windows\pgsql\bin\pg_dump.exe` があればOK）。`C:\Program Files\PostgreSQL\<バージョン>\bin` にインストールしてある場合はそちらも自動で使います。
+3. `scripts\windows\start-backup.bat` をダブルクリックします。初回だけ External Database URL を貼り付けて Enter を押します（画面には表示されません。`?sslmode=require` は自動で付き、`scripts\windows\backup.env` に保存されます）。
+4. 開いた PowerShell ウィンドウは開いたままにします。閉じるとバックアップが止まります。
+
+*   既定では5分ごとに `%USERPROFILE%\queueticket-backups\queueticket-YYYYmmdd-HHMMSS.sql.gz` を作り、最新1000件を残します。ログは同じフォルダの `backup.log` に残ります。間隔と件数は `backup.env` の `INTERVAL_MINUTES` と `KEEP` で変えられます。
+*   通信に失敗しても止まらず、次の回で再試行します。ウィンドウのタイトルに最終成功時刻または「失敗あり」が表示されます。接続は20秒でタイムアウトします。
+*   ウィンドウを開いている間は、PCのスリープと画面オフを防ぎます。
+*   二重起動は防止されます（2つ目のウィンドウはすぐ終了します）。
+*   **復元**: Render の Web Service を Suspend してから `scripts\windows\restore.bat` をダブルクリックします。新しい順に表示されるバックアップから番号を選び、`yes` と入力すると、DB がその時点の内容に置き換わります。成功したら Web Service を Resume します。
+*   `backup.env` には DB のパスワードが含まれます。文化祭が終わったら、`backup.env` とバックアップフォルダを貸与PCから削除してください。
+*   テストは `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\backup_windows_test.ps1` で実行できます（WSL からは `wslpath -w` でパスを変換）。
+
 ### Render で同じ Dockerfile を使う場合
 
 Dockerランタイムでこのリポジトリをデプロイし、外部PostgreSQLへの `DATABASE_URL`、`ADMIN_PASSWORD`、公開URLの `BASE_URL` を環境変数として設定します。アプリはRenderから渡される `PORT` を読み取り、`0.0.0.0` で待ち受けます。HTML・マイグレーション・JavaScriptはビルド時にバイナリへ埋め込まれるため、実行用イメージに別途配置する必要はありません。
@@ -184,6 +201,10 @@ Dockerランタイムでこのリポジトリをデプロイし、外部PostgreS
 *   ブラウザを全画面表示（`F11` キー）にしていること。
 *   プロジェクター投影画面（`/admin/display/screen`）は、ページ再読み込みで動画の選択が消えるため、「開始」を押すたびにローカルのPV動画ファイルを選び直すこと。
 *   PV音声や呼び出しチャイムを鳴らす場合は、端末の音量・ミュート解除を確認すること。
+*   ふたを閉じて使う場合は、電源オプションの「カバーを閉じたときの動作」を「何もしない」にすること。
+*   Edge を使う場合は「スリープ中のタブ」と効率モードをオフにすること（投影タブがバックグラウンドに回ると定期通信が止まり、Render がスリープするため）。
+*   通知が投影画面に出ないよう「応答不可」をオンにすること。画面を「拡張」にした場合は、ブラウザをプロジェクター側に移してから全画面にすること。
+*   DBバックアップを兼ねる場合は、`scripts\windows\start-backup.bat` のウィンドウを開いたままにし、タイトルに最終成功時刻が出ていることを確認すること（「Windows ノートPCで Render の DB を定期バックアップする」を参照）。
 
 ### 開場前の注意（Render 無料プラン利用時）
 Render の無料プランは15分間アクセスがないとスリープし、復帰に約1分かかります。開場前に表示端末（`/admin/display/front` や `/admin/display/screen`）を起動して画面を開いておくと、2〜3秒ごとの定期通信が行われるためスリープを防げます。

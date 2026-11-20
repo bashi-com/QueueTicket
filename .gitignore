@@ -6,3 +6,5 @@ main_copy.txt
 .env
 .serena/
 scripts/backup.env
+scripts/windows/backup.env
+scripts/windows/pgsql/
